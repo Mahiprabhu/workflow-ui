@@ -1,0 +1,594 @@
+import React, { useMemo, useState } from "react";
+
+/**
+ * Workflow UI — Step 3 (UI-only)
+ * - Expanded complaint statuses + tooltips
+ * - Manager allocation: Complaint Unallocated -> CH Review (choose CH from dropdown)
+ * - User console: CH picks up, can Refer (dropdown) or Close (after Refer)
+ * - Referral Teams console: can mark referral complete (CH cannot)
+ * - Start time on Pick up; End time when leaving Pick up
+ * - Async sim with latency + toasts + proper pending/disabled logic
+ */
+
+/* ------------------ Status model ------------------ */
+const STATUSES = [
+  "complaint_unallocated",
+  "ch_review",
+  "pick_up",
+  "ch_complaint_closed",
+  "ref_to_bo_uk",
+  "ref_to_bo_ind",
+  "ref_to_finance",
+  "ref_to_aps",
+  "ref_to_cuw",
+  "ref_to_fct",
+  "ref_to_client",
+  "ref_to_rs",
+  "ref_to_ph",
+  "ch_referral_complete",
+  "rwol_product",
+  "ref_to_timeline_update",
+];
+
+const LABEL = {
+  complaint_unallocated: "Complaint Unallocated",
+  ch_review: "CH Review",
+  pick_up: "Pick up",
+  ch_complaint_closed: "CH Complaint Closed",
+  ref_to_bo_uk: "Ref to BO UK",
+  ref_to_bo_ind: "Ref to BO Ind",
+  ref_to_finance: "Ref to Finance",
+  ref_to_aps: "Ref to APS",
+  ref_to_cuw: "Ref to C&UW",
+  ref_to_fct: "Ref to FCT",
+  ref_to_client: "Ref to Client",
+  ref_to_rs: "Ref to RS",
+  ref_to_ph: "Ref to PH",
+  ch_referral_complete: "CH Referral Complete",
+  rwol_product: "RWOL Product",
+  ref_to_timeline_update: "Ref to Timeline Update",
+};
+
+const DESC = {
+  complaint_unallocated: "Complaint request is yet to be allocated to CH for review",
+  ch_review: "Complaint allocated to CH for review",
+  pick_up: "Complaint Request is picked up for processing",
+  ch_complaint_closed: "Complaint is closed by the CH",
+  ref_to_bo_uk: "Ref to UK Backoffice for further action",
+  ref_to_bo_ind: "Ref to India Backoffice for further action",
+  ref_to_finance: "Ref to Finance for further action",
+  ref_to_aps: "Ref to APS for calculations and pending action",
+  ref_to_cuw: "Ref to Claims & Underwriting team",
+  ref_to_fct: "Ref to Financial Crime Team for decision/guidance",
+  ref_to_client: "Ref to Client for direction or decision",
+  ref_to_rs: "Awaiting details from the Receiving Scheme",
+  ref_to_ph: "Awaiting details/documents from Policy Holder",
+  ch_referral_complete: "Returned to complaint handler post referral actions",
+  rwol_product: "Complaints related to RWOL Product",
+  ref_to_timeline_update: "Referred to India team for Timeline updation",
+};
+
+/* ------------------ Transition rules ------------------ */
+const ALLOWED_NEXT = {
+  complaint_unallocated: ["ch_review"], // manager allocates to CH review
+  ch_review: ["pick_up"], // CH picks up to start work
+  pick_up: [
+    "ch_complaint_closed",
+    "ref_to_bo_uk",
+    "ref_to_bo_ind",
+    "ref_to_finance",
+    "ref_to_aps",
+    "ref_to_cuw",
+    "ref_to_fct",
+    "ref_to_client",
+    "ref_to_rs",
+    "ref_to_ph",
+    "rwol_product",
+    "ref_to_timeline_update",
+  ],
+  // referral queues can return to CH
+  ref_to_bo_uk: ["ch_referral_complete"],
+  ref_to_bo_ind: ["ch_referral_complete"],
+  ref_to_finance: ["ch_referral_complete"],
+  ref_to_aps: ["ch_referral_complete"],
+  ref_to_cuw: ["ch_referral_complete"],
+  ref_to_fct: ["ch_referral_complete"],
+  ref_to_client: ["ch_referral_complete"],
+  ref_to_rs: ["ch_referral_complete"],
+  ref_to_ph: ["ch_referral_complete"],
+  ch_referral_complete: ["ch_review", "pick_up"], // back with CH
+  ch_complaint_closed: [],
+  rwol_product: ["ch_review", "pick_up"],
+  ref_to_timeline_update: ["ch_referral_complete"],
+};
+
+function canTransition(from, to) {
+  return ALLOWED_NEXT[from]?.includes(to);
+}
+
+/* ------------------ Sample data + CH list ------------------ */
+const initialItems = [
+  { id: "W-201", title: "Address change complaint", assignee: null, status: "complaint_unallocated", startTime: null, endTime: null },
+  { id: "W-202", title: "Chargeback follow-up",    assignee: "you", status: "ch_review", startTime: null, endTime: null },
+  { id: "W-203", title: "Refund case - #7781",      assignee: "you", status: "pick_up",   startTime: Date.now() - 5 * 60 * 1000, endTime: null },
+  { id: "W-204", title: "Vendor onboarding",        assignee: "bob", status: "ref_to_finance", startTime: Date.now() - 60 * 60 * 1000, endTime: null },
+  { id: "W-205", title: "Policy docs missing",      assignee: "alice", status: "ch_review", startTime: null, endTime: null },
+];
+
+const CH_NAMES = ["Alice", "Bob", "Charlie", "Deepa", "Ehsan", "you"]; // sample list
+
+/* ------------------ Simulated API (UI-only) ------------------ */
+function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+async function apiAllocateToCH(item, handlerName) {
+  await delay(500 + Math.random() * 400);
+  if (!canTransition(item.status, "ch_review")) throw new Error("Cannot allocate from current status.");
+  return { ...item, assignee: handlerName, status: "ch_review" };
+}
+
+async function apiPickUp(item, { currentUser, youHaveActive }) {
+  await delay(600 + Math.random() * 400);
+  if (youHaveActive && !(item.assignee === currentUser && item.status === "pick_up")) {
+    throw new Error("You already have an active item. Complete or refer it before picking another.");
+  }
+  const next = "pick_up";
+  if (!canTransition(item.status, next)) throw new Error("Invalid transition to Pick up.");
+  return {
+    ...item,
+    assignee: currentUser,
+    status: next,
+    startTime: item.startTime ?? Date.now(),
+    endTime: null,
+  };
+}
+
+async function apiMove(item, next) {
+  await delay(500 + Math.random() * 400);
+  if (!canTransition(item.status, next)) {
+    throw new Error(`Invalid transition from ${LABEL[item.status]} to ${LABEL[next]}.`);
+  }
+  const leavingPick = item.status === "pick_up" && next !== "pick_up";
+  return { ...item, status: next, endTime: leavingPick ? Date.now() : item.endTime };
+}
+
+/* ------------------ Toasts ------------------ */
+function Toasts({ toasts, remove }) {
+  return (
+    <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-50">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className={`px-3 py-2 rounded-xl shadow text-sm ${
+            t.type === "error" ? "bg-red-100 text-red-900" : "bg-emerald-100 text-emerald-900"
+          }`}
+        >
+          <div className="flex items-start gap-2">
+            <div className="font-medium">{t.type === "error" ? "Error" : "Success"}</div>
+            <div className="opacity-80">{t.msg}</div>
+            <button className="ml-2 opacity-60 hover:opacity-100" onClick={() => remove(t.id)}>✕</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------ App ------------------ */
+export default function App() {
+  const [items, setItems] = useState(initialItems);
+  const [tab, setTab] = useState("manager"); // "manager" | "user" | "referrals"
+  const [allocSelect, setAllocSelect] = useState({}); // { [itemId]: handlerName }
+  const [referSelect, setReferSelect] = useState({}); // { [itemId]: referralStatus }
+  const currentUser = "you"; // TODO: auth later
+
+  const [pending, setPending] = useState({});
+  const [toasts, setToasts] = useState([]);
+  const pushToast = (msg, type = "success") => setToasts((ts) => [...ts, { id: Math.random().toString(36).slice(2), msg, type }]);
+  const removeToast = (id) => setToasts((ts) => ts.filter((t) => t.id !== id));
+
+  /* ---- Derived ---- */
+  const summary = useMemo(() => {
+    const counts = Object.fromEntries(STATUSES.map((s) => [s, 0]));
+    for (const it of items) counts[it.status]++;
+    return counts;
+  }, [items]);
+
+  const yourItems = useMemo(
+    () => items.filter((i) => i.assignee === currentUser || (i.assignee === null && i.status === "complaint_unallocated")),
+    [items]
+  );
+
+  const referralItems = useMemo(() => items.filter((i) => i.status.startsWith("ref_to_")), [items]);
+
+  const youHaveActive = useMemo(
+    () => items.some((i) => i.assignee === currentUser && i.status === "pick_up"),
+    [items]
+  );
+
+  const isPending = (item, action = null) => {
+    const val = pending[item.id];
+    if (action == null) return Boolean(val);
+    return val === action;
+  };
+
+  const canActOn = (it) => {
+    if (it.assignee === currentUser && it.status === "pick_up") return true; // can always act on your active
+    return !youHaveActive; // otherwise block if you already have an active one
+  };
+
+  /* ---- Actions ---- */
+  async function handleAllocate(item) {
+    const handler = allocSelect[item.id] || CH_NAMES[0];
+    setPending((p) => ({ ...p, [item.id]: "allocate" }));
+    try {
+      const updated = await apiAllocateToCH(item, handler);
+      setItems((prev) => prev.map((it) => (it.id === item.id ? updated : it)));
+      pushToast(`Allocated ${item.id} to ${handler}`);
+    } catch (e) {
+      pushToast(e.message || "Failed to allocate", "error");
+    } finally {
+      setPending((p) => ({ ...p, [item.id]: null }));
+    }
+  }
+
+  async function handlePickUp(item) {
+    setPending((p) => ({ ...p, [item.id]: "pickup" }));
+    try {
+      const updated = await apiPickUp(item, { currentUser, youHaveActive });
+      setItems((prev) => prev.map((it) => (it.id === item.id ? updated : it)));
+      pushToast(`Picked up ${item.id}`);
+    } catch (e) {
+      pushToast(e.message || "Failed to pick up", "error");
+    } finally {
+      setPending((p) => ({ ...p, [item.id]: null }));
+    }
+  }
+
+  async function handleMove(item, next) {
+    setPending((p) => ({ ...p, [item.id]: next }));
+    try {
+      const updated = await apiMove(item, next);
+      setItems((prev) => prev.map((it) => (it.id === item.id ? updated : it)));
+      pushToast(`${item.id} → ${LABEL[next]}`);
+    } catch (e) {
+      pushToast(e.message || "Failed to move status", "error");
+    } finally {
+      setPending((p) => ({ ...p, [item.id]: null }));
+    }
+  }
+
+  /* ---- UI helpers ---- */
+  const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : "—");
+  const pill = (status) =>
+    ({
+      complaint_unallocated: "bg-gray-100 text-gray-800",
+      ch_review: "bg-blue-100 text-blue-800",
+      pick_up: "bg-amber-100 text-amber-800",
+      ch_complaint_closed: "bg-emerald-100 text-emerald-800",
+      ref_to_bo_uk: "bg-purple-100 text-purple-800",
+      ref_to_bo_ind: "bg-purple-100 text-purple-800",
+      ref_to_finance: "bg-purple-100 text-purple-800",
+      ref_to_aps: "bg-purple-100 text-purple-800",
+      ref_to_cuw: "bg-purple-100 text-purple-800",
+      ref_to_fct: "bg-purple-100 text-purple-800",
+      ref_to_client: "bg-purple-100 text-purple-800",
+      ref_to_rs: "bg-purple-100 text-purple-800",
+      ref_to_ph: "bg-purple-100 text-purple-800",
+      ch_referral_complete: "bg-indigo-100 text-indigo-800",
+      rwol_product: "bg-pink-100 text-pink-800",
+      ref_to_timeline_update: "bg-purple-100 text-purple-800",
+    }[status]);
+
+  const referralTargets = [
+    "ref_to_bo_uk",
+    "ref_to_bo_ind",
+    "ref_to_finance",
+    "ref_to_aps",
+    "ref_to_cuw",
+    "ref_to_fct",
+    "ref_to_client",
+    "ref_to_rs",
+    "ref_to_ph",
+    "ref_to_timeline_update",
+  ];
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 p-6">
+      <div className="max-w-7xl mx-auto">
+        <header className="mb-6">
+          <h1 className="text-2xl font-semibold">Workflow Tracker</h1>
+          <p className="text-sm text-slate-600">Step 3 — expanded statuses + manager allocation</p>
+        </header>
+
+        {/* Tabs */}
+        <div className="mb-6 flex gap-2">
+          <button
+            className={`px-4 py-2 rounded-2xl shadow-sm ${tab === "manager" ? "bg-white" : "bg-slate-100"}`}
+            onClick={() => setTab("manager")}
+          >
+            Manager Console
+          </button>
+          <button
+            className={`px-4 py-2 rounded-2xl shadow-sm ${tab === "user" ? "bg-white" : "bg-slate-100"}`}
+            onClick={() => setTab("user")}
+          >
+            User Console
+          </button>
+          <button
+            className={`px-4 py-2 rounded-2xl shadow-sm ${tab === "referrals" ? "bg-white" : "bg-slate-100"}`}
+            onClick={() => setTab("referrals")}
+          >
+            Referral Teams
+          </button>
+        </div>
+
+        {/* ---------- Manager Console ---------- */}
+        {tab === "manager" && (
+          <section className="grid md:grid-cols-4 lg:grid-cols-6 gap-4">
+            {STATUSES.map((s) => (
+              <div key={s} className="bg-white rounded-2xl shadow p-4" title={DESC[s]}>
+                <div className="text-[11px] uppercase tracking-wide text-slate-500">{LABEL[s]}</div>
+                <div className="text-3xl font-bold mt-1">{summary[s]}</div>
+              </div>
+            ))}
+
+            <div className="md:col-span-6 bg-white rounded-2xl shadow p-4 mt-2">
+              <h2 className="text-lg font-medium mb-3">All Work Items</h2>
+              <div className="overflow-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-slate-500">
+                      <th className="py-2 pr-4">ID</th>
+                      <th className="py-2 pr-4">Title</th>
+                      <th className="py-2 pr-4">Assignee</th>
+                      <th className="py-2 pr-4">Status</th>
+                      <th className="py-2 pr-4">Start</th>
+                      <th className="py-2 pr-4">End</th>
+                      <th className="py-2 pr-4">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((it) => (
+                      <tr key={it.id} className="border-t border-slate-100 align-top">
+                        <td className="py-2 pr-4 font-mono">{it.id}</td>
+                        <td className="py-2 pr-4">{it.title}</td>
+                        <td className="py-2 pr-4">{it.assignee ?? "—"}</td>
+                        <td className="py-2 pr-4">
+                          <span className={`px-2 py-1 rounded-full text-xs ${pill(it.status)}`} title={DESC[it.status]}>
+                            {LABEL[it.status]}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-4">{fmt(it.startTime)}</td>
+                        <td className="py-2 pr-4">{fmt(it.endTime)}</td>
+                        <td className="py-2 pr-4 min-w-[320px]">
+                          {it.status === "complaint_unallocated" ? (
+                            <div className="flex items-center gap-2">
+                              <select
+                                className="border rounded-xl px-2 py-1"
+                                value={allocSelect[it.id] ?? CH_NAMES[0]}
+                                onChange={(e) => setAllocSelect((s) => ({ ...s, [it.id]: e.target.value }))}
+                                title="Choose Complaint Handler"
+                              >
+                                {CH_NAMES.map((name) => (
+                                  <option key={name} value={name}>{name}</option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                className={`px-3 py-1 rounded-xl ${isPending(it, "allocate") ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"}`}
+                                onClick={() => handleAllocate(it)}
+                                disabled={isPending(it, "allocate")}
+                                title="Allocate to selected CH (moves to CH Review)"
+                              >
+                                {isPending(it, "allocate") ? "Allocating…" : "Allocate"}
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 text-xs">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* ---------- User Console (CH) ---------- */}
+        {tab === "user" && (
+          <section className="grid gap-4">
+            <div className="bg-white rounded-2xl shadow p-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-medium">Your Queue</h2>
+                <p className="text-sm text-slate-500">
+                  Signed in as <span className="font-medium">{currentUser}</span>
+                </p>
+              </div>
+              {youHaveActive ? (
+                <div className="text-sm px-3 py-1 rounded-full bg-amber-100 text-amber-800">You have an active item</div>
+              ) : (
+                <div className="text-sm px-3 py-1 rounded-full bg-emerald-100 text-emerald-800">No active item</div>
+              )}
+            </div>
+
+            <div className="bg-white rounded-2xl shadow p-4">
+              <div className="overflow-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-slate-500">
+                      <th className="py-2 pr-4">ID</th>
+                      <th className="py-2 pr-4">Title</th>
+                      <th className="py-2 pr-4">Assignee</th>
+                      <th className="py-2 pr-4">Status</th>
+                      <th className="py-2 pr-4">Start</th>
+                      <th className="py-2 pr-4">End</th>
+                      <th className="py-2 pr-4">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {yourItems.map((it) => (
+                      <tr key={it.id} className="border-t border-slate-100 align-top">
+                        <td className="py-2 pr-4 font-mono">{it.id}</td>
+                        <td className="py-2 pr-4">{it.title}</td>
+                        <td className="py-2 pr-4">{it.assignee ?? "—"}</td>
+                        <td className="py-2 pr-4">
+                          <span className={`px-2 py-1 rounded-full text-xs ${pill(it.status)}`} title={DESC[it.status]}>
+                            {LABEL[it.status]}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-4">{fmt(it.startTime)}</td>
+                        <td className="py-2 pr-4">{fmt(it.endTime)}</td>
+                        <td className="py-2 pr-4 min-w-[360px]">
+                          <div className="flex flex-wrap gap-2 items-center">
+                            {it.status === "ch_review" && it.assignee === currentUser && (
+                              <button
+                                type="button"
+                                disabled={!canActOn(it) || isPending(it, "pickup")}
+                                className={`px-3 py-1 rounded-xl ${
+                                  (!canActOn(it) || isPending(it, "pickup")) ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"
+                                }`}
+                                onClick={() => handlePickUp(it)}
+                                title="Pick up and start processing"
+                              >
+                                {isPending(it, "pickup") ? "Picking…" : "Pick up"}
+                              </button>
+                            )}
+
+                            {it.status === "pick_up" && it.assignee === currentUser && (
+                              <>
+                                {/* Refer first */}
+                                <div className="flex items-center gap-2">
+                                  <select
+                                    className="border rounded-xl px-2 py-1"
+                                    value={referSelect[it.id] ?? referralTargets[0]}
+                                    onChange={(e) => setReferSelect((s) => ({ ...s, [it.id]: e.target.value }))}
+                                    title="Choose referral destination"
+                                  >
+                                    {referralTargets.map((next) => (
+                                      <option key={next} value={next}>{LABEL[next]}</option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    type="button"
+                                    disabled={isPending(it, "referring")}
+                                    className={`px-3 py-1 rounded-xl ${
+                                      isPending(it, "referring") ? "bg-slate-200 text-slate-400" : "bg-purple-600 text-white"
+                                    }`}
+                                    onClick={() => {
+                                      const next = referSelect[it.id] ?? referralTargets[0];
+                                      setPending((p) => ({ ...p, [it.id]: "referring" }));
+                                      handleMove(it, next).finally(() =>
+                                        setPending((p) => ({ ...p, [it.id]: null })) // <-- FIXED: it.id
+                                      );
+                                    }}
+                                    title={DESC[referSelect[it.id] ?? referralTargets[0]]}
+                                  >
+                                    Refer
+                                  </button>
+                                </div>
+
+                                {/* Close after refer option */}
+                                <button
+                                  type="button"
+                                  disabled={isPending(it, "ch_complaint_closed")}
+                                  className={`px-3 py-1 rounded-xl ${
+                                    isPending(it, "ch_complaint_closed") ? "bg-slate-200 text-slate-400" : "bg-emerald-600 text-white"
+                                  }`}
+                                  onClick={() => handleMove(it, "ch_complaint_closed")}
+                                  title="Close complaint"
+                                >
+                                  {isPending(it, "ch_complaint_closed") ? "Closing…" : "Close"}
+                                </button>
+                              </>
+                            )}
+
+                            {/* CH cannot complete referrals here */}
+                            {it.status.startsWith("ref_to_") && (
+                              <span className="text-xs text-slate-400">Waiting on referral team…</span>
+                            )}
+
+                            {it.status === "ch_referral_complete" && it.assignee === currentUser && (
+                              <button
+                                type="button"
+                                disabled={isPending(it, "pick_up")}
+                                className={`px-3 py-1 rounded-xl ${
+                                  isPending(it, "pick_up") ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"
+                                }`}
+                                onClick={() => handleMove(it, "pick_up")}
+                                title="Re-pick and continue processing"
+                              >
+                                {isPending(it, "pick_up") ? "Picking…" : "Re-pick"}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* ---------- Referral Teams Console ---------- */}
+        {tab === "referrals" && (
+          <section className="grid gap-4">
+            <div className="bg-white rounded-2xl shadow p-4">
+              <h2 className="text-lg font-medium mb-3">Referral Queue</h2>
+              <div className="overflow-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-slate-500">
+                      <th className="py-2 pr-4">ID</th>
+                      <th className="py-2 pr-4">Title</th>
+                      <th className="py-2 pr-4">Assignee</th>
+                      <th className="py-2 pr-4">Status</th>
+                      <th className="py-2 pr-4">Start</th>
+                      <th className="py-2 pr-4">End</th>
+                      <th className="py-2 pr-4">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {referralItems.length === 0 && (
+                      <tr><td colSpan={7} className="py-6 text-slate-500">No items in referral queues.</td></tr>
+                    )}
+                    {referralItems.map((it) => (
+                      <tr key={it.id} className="border-t border-slate-100 align-top">
+                        <td className="py-2 pr-4 font-mono">{it.id}</td>
+                        <td className="py-2 pr-4">{it.title}</td>
+                        <td className="py-2 pr-4">{it.assignee ?? "—"}</td>
+                        <td className="py-2 pr-4">
+                          <span className={`px-2 py-1 rounded-full text-xs ${pill(it.status)}`} title={DESC[it.status]}>
+                            {LABEL[it.status]}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-4">{fmt(it.startTime)}</td>
+                        <td className="py-2 pr-4">{fmt(it.endTime)}</td>
+                        <td className="py-2 pr-4 min-w-[240px]">
+                          <button
+                            type="button"
+                            disabled={isPending(it, "ch_referral_complete")}
+                            className={`px-3 py-1 rounded-xl ${isPending(it, "ch_referral_complete") ? "bg-slate-200 text-slate-400" : "bg-indigo-600 text-white"}`}
+                            onClick={() => handleMove(it, "ch_referral_complete")}
+                            title="Return to CH (Referral Complete)"
+                          >
+                            {isPending(it, "ch_referral_complete") ? "Completing…" : "Mark Referral Complete"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
+      </div>
+
+      <Toasts toasts={toasts} remove={removeToast} />
+    </div>
+  );
+}
