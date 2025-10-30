@@ -107,13 +107,19 @@ function canTransition(from, to) {
 }
 
 /* ------------------ Sample data + CH list ------------------ */
-const initialItems = [
+ const initialItems = [
   { id: "W-201", title: "Address change complaint", assignee: null, status: "complaint_unallocated", startTime: null, endTime: null },
   { id: "W-202", title: "Chargeback follow-up",    assignee: "you", status: "ch_review", startTime: null, endTime: null },
   { id: "W-203", title: "Refund case - #7781",      assignee: "you", status: "pick_up",   startTime: Date.now() - 5 * 60 * 1000, endTime: null },
   { id: "W-204", title: "Vendor onboarding",        assignee: "bob", status: "ref_to_finance", startTime: Date.now() - 60 * 60 * 1000, endTime: null },
   { id: "W-205", title: "Policy docs missing",      assignee: "alice", status: "ch_review", startTime: null, endTime: null },
-];
+  { id: "W-201", title: "Address change complaint", assignee: null,  status: "complaint_unallocated", startTime: null, endTime: null, comments: [] },
+  { id: "W-202", title: "Chargeback follow-up",     assignee: "you", status: "ch_review",             startTime: null, endTime: null, comments: [] },
+  { id: "W-203", title: "Refund case - #7781",      assignee: "you", status: "pick_up",               startTime: Date.now() - 5 * 60 * 1000, endTime: null,
+    comments: [{ ts: Date.now() - 10 * 60 * 1000, author: "you", text: "Initial review started." }] },
+  { id: "W-204", title: "Vendor onboarding",        assignee: "bob", status: "ref_to_finance",        startTime: Date.now() - 60 * 60 * 1000, endTime: null, comments: [] },
+  { id: "W-205", title: "Policy docs missing",      assignee: "alice",status: "ch_review",            startTime: null, endTime: null, comments: [] },
+ ];
 
 const CH_NAMES = ["Alice", "Bob", "Charlie", "Deepa", "Ehsan", "you"]; // sample list
 
@@ -257,6 +263,17 @@ export default function App() {
     }
   }
 
+  function handleAddComment(item) {
+  const text = window.prompt(`Add comment for ${item.id}:`);
+  if (!text || !text.trim()) return;
+  const note = { ts: Date.now(), author: currentUser, text: text.trim() };
+  setItems(prev =>
+    prev.map(it => it.id === item.id ? { ...it, comments: [...(it.comments ?? []), note] } : it)
+  );
+  pushToast(`Added comment on ${item.id}`);
+}
+
+
   /* ---- UI helpers ---- */
   const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : "—");
   const pill = (status) =>
@@ -279,6 +296,9 @@ export default function App() {
       ref_to_timeline_update: "bg-purple-100 text-purple-800",
     }[status]);
 
+  const fmtShort = (s, n = 30) => (s.length > n ? s.slice(0, n) + "…" : s);
+
+
   const referralTargets = [
     "ref_to_bo_uk",
     "ref_to_bo_ind",
@@ -296,8 +316,8 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900 p-6">
       <div className="max-w-7xl mx-auto">
         <header className="mb-6">
-          <h1 className="text-2xl font-semibold">Workflow Tracker</h1>
-          <p className="text-sm text-slate-600">Step 3 — expanded statuses + manager allocation</p>
+          <h1 className="text-2xl font-semibold">Complaints Workflow Tracker</h1>
+          <p className="text-sm text-slate-600">Simplified Workflow Engine</p>
         </header>
 
         {/* Tabs */}
@@ -344,6 +364,7 @@ export default function App() {
                       <th className="py-2 pr-4">Status</th>
                       <th className="py-2 pr-4">Start</th>
                       <th className="py-2 pr-4">End</th>
+                      <th className="py-2 pr-4">Comments</th>
                       <th className="py-2 pr-4">Actions</th>
                     </tr>
                   </thead>
@@ -360,6 +381,30 @@ export default function App() {
                         </td>
                         <td className="py-2 pr-4">{fmt(it.startTime)}</td>
                         <td className="py-2 pr-4">{fmt(it.endTime)}</td>
+                        <td className="py-2 pr-4 min-w-[260px]">
+                          {it.comments && it.comments.length > 0 ? (
+                            <div className="text-xs">
+                              <div className="text-slate-500">({it.comments.length}) latest</div>
+                              <div className="text-slate-800">
+                                {fmtShort(it.comments[it.comments.length - 1].text, 40)}
+                              </div>
+                              <div className="text-slate-500">
+                                {new Date(it.comments[it.comments.length - 1].ts).toLocaleString()}
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 text-xs">No comments</span>
+                          )}
+                          <div>
+                            <button
+                              type="button"
+                              className="mt-1 px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs"
+                              onClick={() => handleAddComment(it)}
+                            >
+                              Add
+                            </button>
+                          </div>
+                        </td>
                         <td className="py-2 pr-4 min-w-[320px]">
                           {it.status === "complaint_unallocated" ? (
                             <div className="flex items-center gap-2">
@@ -424,6 +469,7 @@ export default function App() {
                       <th className="py-2 pr-4">Status</th>
                       <th className="py-2 pr-4">Start</th>
                       <th className="py-2 pr-4">End</th>
+                      <th className="py-2 pr-4">Comments</th>
                       <th className="py-2 pr-4">Actions</th>
                     </tr>
                   </thead>
@@ -440,6 +486,30 @@ export default function App() {
                         </td>
                         <td className="py-2 pr-4">{fmt(it.startTime)}</td>
                         <td className="py-2 pr-4">{fmt(it.endTime)}</td>
+                        <td className="py-2 pr-4 min-w-[260px]">
+                          {it.comments && it.comments.length > 0 ? (
+                            <div className="text-xs">
+                              <div className="text-slate-500">({it.comments.length}) latest</div>
+                              <div className="text-slate-800">
+                                {fmtShort(it.comments[it.comments.length - 1].text, 40)}
+                              </div>
+                              <div className="text-slate-500">
+                                {new Date(it.comments[it.comments.length - 1].ts).toLocaleString()}
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 text-xs">No comments</span>
+                          )}
+                          <div>
+                            <button
+                              type="button"
+                              className="mt-1 px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs"
+                              onClick={() => handleAddComment(it)}
+                            >
+                              Add
+                            </button>
+                          </div>
+                        </td>
                         <td className="py-2 pr-4 min-w-[360px]">
                           <div className="flex flex-wrap gap-2 items-center">
                             {it.status === "ch_review" && it.assignee === currentUser && (
@@ -548,6 +618,7 @@ export default function App() {
                       <th className="py-2 pr-4">Status</th>
                       <th className="py-2 pr-4">Start</th>
                       <th className="py-2 pr-4">End</th>
+                      <th className="py-2 pr-4">Comments</th>
                       <th className="py-2 pr-4">Actions</th>
                     </tr>
                   </thead>
@@ -567,6 +638,30 @@ export default function App() {
                         </td>
                         <td className="py-2 pr-4">{fmt(it.startTime)}</td>
                         <td className="py-2 pr-4">{fmt(it.endTime)}</td>
+                        <td className="py-2 pr-4 min-w-[260px]">
+                          {it.comments && it.comments.length > 0 ? (
+                            <div className="text-xs">
+                              <div className="text-slate-500">({it.comments.length}) latest</div>
+                              <div className="text-slate-800">
+                                {fmtShort(it.comments[it.comments.length - 1].text, 40)}
+                              </div>
+                              <div className="text-slate-500">
+                                {new Date(it.comments[it.comments.length - 1].ts).toLocaleString()}
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 text-xs">No comments</span>
+                          )}
+                          <div>
+                            <button
+                              type="button"
+                              className="mt-1 px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs"
+                              onClick={() => handleAddComment(it)}
+                            >
+                              Add
+                            </button>
+                          </div>
+                        </td>
                         <td className="py-2 pr-4 min-w-[240px]">
                           <button
                             type="button"
