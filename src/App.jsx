@@ -4,10 +4,11 @@ import React, { useMemo, useState } from "react";
  * Workflow UI — Step 3 (UI-only)
  * - Expanded complaint statuses + tooltips
  * - Manager allocation: Complaint Unallocated -> CH Review (choose CH from dropdown)
- * - User console: CH picks up, can Refer (dropdown) or Close (after Refer)
+ * - User console: CH picks up, can Refer (dropdown) or Close
  * - Referral Teams console: can mark referral complete (CH cannot)
- * - Start time on Pick up; End time when leaving Pick up
- * - Async sim with latency + toasts + proper pending/disabled logic
+ * - Start time on Pick up; End time when leaving Pick up; cumulative spentMs
+ * - Toasts + pending/disabled logic
+ * - Per-console search; Manager rollups
  */
 
 /* ------------------ Status model ------------------ */
@@ -106,6 +107,7 @@ function canTransition(from, to) {
   return ALLOWED_NEXT[from]?.includes(to);
 }
 
+/* ------------------ Helpers ------------------ */
 function fmtDate(ts) {
   if (!ts) return "—";
   const d = new Date(ts);
@@ -121,27 +123,80 @@ function randomDateDaysAgo(minDays = 1, maxDays = 30) {
   return Date.now() - days * 24 * 60 * 60 * 1000;
 }
 
+// Human readable duration like 1h 03m 12s
+function fmtDuration(ms) {
+  if (!ms || ms < 1000) return "0s";
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const parts = [];
+  if (h) parts.push(`${h}h`);
+  if (m || h) parts.push(`${String(m).padStart(2, "0")}m`);
+  parts.push(`${String(sec).padStart(2, "0")}s`);
+  return parts.join(" ");
+}
+
+// Elapsed for the *current* session (user & referral tables)
+function currentElapsedMs(it) {
+  if (it.startTime && !it.endTime) return Date.now() - it.startTime;
+  if (it.startTime && it.endTime) return it.endTime - it.startTime;
+  return 0;
+}
+
+// Total spent for manager (cumulative + any active)
+function totalSpentMs(it) {
+  const active = it.status === "pick_up" && it.startTime && !it.endTime ? (Date.now() - it.startTime) : 0;
+  return (it.spentMs || 0) + active;
+}
+
+function matchesFilter(it, q) {
+  if (!q) return true;
+  const needle = q.trim().toLowerCase().replace(/\*/g, ""); // simple wildcard: ignore '*'
+  if (!needle) return true;
+  const haystack = [
+    it.id,
+    it.title,
+    it.assignee || "",
+    LABEL[it.status],
+    ...(it.comments || []).map((c) => c.text),
+  ]
+    .join(" | ")
+    .toLowerCase();
+  return haystack.includes(needle);
+}
+
 /* ------------------ Sample data + CH list ------------------ */
 const seedItems = [
-  { id: "W-201", title: "Address change complaint", assignee: null,  status: "complaint_unallocated", startTime: null, endTime: null, comments: [] },
-  { id: "W-202", title: "Chargeback follow-up",     assignee: "you", status: "ch_review",             startTime: null, endTime: null, comments: [] },
-  { id: "W-203", title: "Refund case - #7781",      assignee: "you", status: "pick_up",               startTime: Date.now() - 5 * 60 * 1000, endTime: null,
-    comments: [{ ts: Date.now() - 10 * 60 * 1000, author: "you", text: "Initial review started." }] },
-  { id: "W-204", title: "Vendor onboarding",        assignee: "bob", status: "ref_to_finance",        startTime: Date.now() - 60 * 60 * 1000, endTime: null, comments: [] },
-  { id: "W-205", title: "Policy docs missing",      assignee: "alice",status: "ch_review",            startTime: null, endTime: null, comments: [] },
+  { id: "W-201", title: "Address change complaint", assignee: null,  status: "complaint_unallocated", startTime: null, endTime: null, spentMs: 0, comments: [] },
+  { id: "W-202", title: "Chargeback follow-up",     assignee: "you", status: "ch_review",             startTime: null, endTime: null, spentMs: 0, comments: [] },
+  {
+    id: "W-203",
+    title: "Refund case - #7781",
+    assignee: "you",
+    status: "pick_up",
+    startTime: Date.now() - 5 * 60 * 1000,
+    endTime: null,
+    spentMs: 0,
+    comments: [{ ts: Date.now() - 10 * 60 * 1000, author: "you", text: "Initial review started." }],
+  },
+  { id: "W-204", title: "Vendor onboarding",        assignee: "bob",   status: "ref_to_finance", startTime: Date.now() - 60 * 60 * 1000, endTime: null, spentMs: 0, comments: [] },
+  { id: "W-205", title: "Policy docs missing",      assignee: "alice", status: "ch_review",      startTime: null, endTime: null, spentMs: 0, comments: [] },
 ];
 
 // Attach complaint dates (received + logged) once at init
 const initialItems = seedItems.map((it) => {
-  const received = randomDateDaysAgo(5, 30);     // in last 5–30 days
-  const logged = received + (Math.floor(Math.random() * 4) * 24 * 60 * 60 * 1000); // 0–3 days after
+  const received = randomDateDaysAgo(5, 30); // last 5–30 days
+  const logged = received + Math.floor(Math.random() * 4) * 24 * 60 * 60 * 1000; // 0–3 days after
   return { ...it, receivedDate: received, loggedDate: logged };
 });
 
 const CH_NAMES = ["Alice", "Bob", "Charlie", "Deepa", "Ehsan", "you"]; // sample list
 
 /* ------------------ Simulated API (UI-only) ------------------ */
-function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
+function delay(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 async function apiAllocateToCH(item, handlerName) {
   await delay(500 + Math.random() * 400);
@@ -160,8 +215,8 @@ async function apiPickUp(item, { currentUser, youHaveActive }) {
     ...item,
     assignee: currentUser,
     status: next,
-    startTime: item.startTime ?? Date.now(),
-    endTime: null,
+    startTime: item.startTime ?? Date.now(), // keep if already running
+    endTime: null, // open session
   };
 }
 
@@ -171,7 +226,19 @@ async function apiMove(item, next) {
     throw new Error(`Invalid transition from ${LABEL[item.status]} to ${LABEL[next]}.`);
   }
   const leavingPick = item.status === "pick_up" && next !== "pick_up";
-  return { ...item, status: next, endTime: leavingPick ? Date.now() : item.endTime };
+  if (leavingPick && item.startTime) {
+    const now = Date.now();
+    const session = now - item.startTime;
+    return {
+      ...item,
+      status: next,
+      startTime: null,                 // close session
+      endTime: now,                    // stamp last session end
+      spentMs: (item.spentMs || 0) + Math.max(0, session),
+    };
+  }
+  // default path (not leaving pick_up)
+  return { ...item, status: next };
 }
 
 /* ------------------ Toasts ------------------ */
@@ -181,14 +248,14 @@ function Toasts({ toasts, remove }) {
       {toasts.map((t) => (
         <div
           key={t.id}
-          className={`px-3 py-2 rounded-xl shadow text-sm ${
-            t.type === "error" ? "bg-red-100 text-red-900" : "bg-emerald-100 text-emerald-900"
-          }`}
+          className={`px-3 py-2 rounded-xl shadow text-sm ${t.type === "error" ? "bg-red-100 text-red-900" : "bg-emerald-100 text-emerald-900"}`}
         >
           <div className="flex items-start gap-2">
             <div className="font-medium">{t.type === "error" ? "Error" : "Success"}</div>
             <div className="opacity-80">{t.msg}</div>
-            <button className="ml-2 opacity-60 hover:opacity-100" onClick={() => remove(t.id)}>✕</button>
+            <button className="ml-2 opacity-60 hover:opacity-100" onClick={() => remove(t.id)}>
+              ✕
+            </button>
           </div>
         </div>
       ))}
@@ -198,6 +265,11 @@ function Toasts({ toasts, remove }) {
 
 /* ------------------ App ------------------ */
 export default function App() {
+  // search boxes (one per console)
+  const [managerQuery, setManagerQuery] = useState("");
+  const [userQuery, setUserQuery] = useState("");
+  const [refQuery, setRefQuery] = useState("");
+
   const [items, setItems] = useState(initialItems);
   const [tab, setTab] = useState("manager"); // "manager" | "user" | "referrals"
   const [allocSelect, setAllocSelect] = useState({}); // { [itemId]: handlerName }
@@ -206,7 +278,8 @@ export default function App() {
 
   const [pending, setPending] = useState({});
   const [toasts, setToasts] = useState([]);
-  const pushToast = (msg, type = "success") => setToasts((ts) => [...ts, { id: Math.random().toString(36).slice(2), msg, type }]);
+  const pushToast = (msg, type = "success") =>
+    setToasts((ts) => [...ts, { id: Math.random().toString(36).slice(2), msg, type }]);
   const removeToast = (id) => setToasts((ts) => ts.filter((t) => t.id !== id));
 
   /* ---- Derived ---- */
@@ -216,12 +289,26 @@ export default function App() {
     return counts;
   }, [items]);
 
-  const yourItems = useMemo(
+  const totals = useMemo(() => {
+    const total = items.length;
+    const completed = items.filter((i) => i.status === "ch_complaint_closed").length;
+    const pipeline = total - completed;
+    return { total, pipeline, completed };
+  }, [items]);
+
+  // Manager list (filtered)
+  const managerItems = useMemo(() => items.filter((i) => matchesFilter(i, managerQuery)), [items, managerQuery]);
+
+  // User lists (filtered)
+  const rawYourItems = useMemo(
     () => items.filter((i) => i.assignee === currentUser || (i.assignee === null && i.status === "complaint_unallocated")),
     [items]
   );
+  const yourItems = useMemo(() => rawYourItems.filter((i) => matchesFilter(i, userQuery)), [rawYourItems, userQuery]);
 
-  const referralItems = useMemo(() => items.filter((i) => i.status.startsWith("ref_to_")), [items]);
+  // Referral lists (filtered)
+  const rawRefItems = useMemo(() => items.filter((i) => i.status.startsWith("ref_to_")), [items]);
+  const referralItems = useMemo(() => rawRefItems.filter((i) => matchesFilter(i, refQuery)), [rawRefItems, refQuery]);
 
   const youHaveActive = useMemo(
     () => items.some((i) => i.assignee === currentUser && i.status === "pick_up"),
@@ -281,15 +368,12 @@ export default function App() {
   }
 
   function handleAddComment(item) {
-  const text = window.prompt(`Add comment for ${item.id}:`);
-  if (!text || !text.trim()) return;
-  const note = { ts: Date.now(), author: currentUser, text: text.trim() };
-  setItems(prev =>
-    prev.map(it => it.id === item.id ? { ...it, comments: [...(it.comments ?? []), note] } : it)
-  );
-  pushToast(`Added comment on ${item.id}`);
-}
-
+    const text = window.prompt(`Add comment for ${item.id}:`);
+    if (!text || !text.trim()) return;
+    const note = { ts: Date.now(), author: currentUser, text: text.trim() };
+    setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, comments: [...(it.comments ?? []), note] } : it)));
+    pushToast(`Added comment on ${item.id}`);
+  }
 
   /* ---- UI helpers ---- */
   const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : "—");
@@ -315,8 +399,6 @@ export default function App() {
 
   const fmtShort = (s, n = 30) => (s.length > n ? s.slice(0, n) + "…" : s);
 
-
-
   const referralTargets = [
     "ref_to_bo_uk",
     "ref_to_bo_ind",
@@ -340,22 +422,13 @@ export default function App() {
 
         {/* Tabs */}
         <div className="mb-6 flex gap-2">
-          <button
-            className={`px-4 py-2 rounded-2xl shadow-sm ${tab === "manager" ? "bg-white" : "bg-slate-100"}`}
-            onClick={() => setTab("manager")}
-          >
+          <button className={`px-4 py-2 rounded-2xl shadow-sm ${tab === "manager" ? "bg-white" : "bg-slate-100"}`} onClick={() => setTab("manager")}>
             Manager Console
           </button>
-          <button
-            className={`px-4 py-2 rounded-2xl shadow-sm ${tab === "user" ? "bg-white" : "bg-slate-100"}`}
-            onClick={() => setTab("user")}
-          >
+          <button className={`px-4 py-2 rounded-2xl shadow-sm ${tab === "user" ? "bg-white" : "bg-slate-100"}`} onClick={() => setTab("user")}>
             User Console
           </button>
-          <button
-            className={`px-4 py-2 rounded-2xl shadow-sm ${tab === "referrals" ? "bg-white" : "bg-slate-100"}`}
-            onClick={() => setTab("referrals")}
-          >
+          <button className={`px-4 py-2 rounded-2xl shadow-sm ${tab === "referrals" ? "bg-white" : "bg-slate-100"}`} onClick={() => setTab("referrals")}>
             Referral Teams
           </button>
         </div>
@@ -363,6 +436,25 @@ export default function App() {
         {/* ---------- Manager Console ---------- */}
         {tab === "manager" && (
           <section className="grid md:grid-cols-4 lg:grid-cols-6 gap-4">
+            {/* Rollups */}
+            <div className="bg-white rounded-2xl shadow p-4 md:col-span-4 lg:col-span-6">
+              <div className="grid sm:grid-cols-3 gap-4">
+                <div className="rounded-xl border p-4">
+                  <div className="text-[11px] uppercase tracking-wide text-slate-500">Total complaints received</div>
+                  <div className="text-3xl font-bold mt-1">{totals.total}</div>
+                </div>
+                <div className="rounded-xl border p-4">
+                  <div className="text-[11px] uppercase tracking-wide text-slate-500">Total complaints in pipeline</div>
+                  <div className="text-3xl font-bold mt-1">{totals.pipeline}</div>
+                </div>
+                <div className="rounded-xl border p-4">
+                  <div className="text-[11px] uppercase tracking-wide text-slate-500">Total complaints completed</div>
+                  <div className="text-3xl font-bold mt-1">{totals.completed}</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Status tiles */}
             {STATUSES.map((s) => (
               <div key={s} className="bg-white rounded-2xl shadow p-4" title={DESC[s]}>
                 <div className="text-[11px] uppercase tracking-wide text-slate-500">{LABEL[s]}</div>
@@ -372,6 +464,16 @@ export default function App() {
 
             <div className="md:col-span-6 bg-white rounded-2xl shadow p-4 mt-2">
               <h2 className="text-lg font-medium mb-3">All Work Items</h2>
+              <div className="mb-3">
+                <input
+                  type="text"
+                  className="border rounded-xl px-3 py-2 w-full md:w-80"
+                  placeholder="Search (id, title, assignee, status, comments)…  Use * as wildcard"
+                  value={managerQuery}
+                  onChange={(e) => setManagerQuery(e.target.value)}
+                />
+              </div>
+
               <div className="overflow-auto">
                 <table className="min-w-full text-sm">
                   <thead>
@@ -384,12 +486,13 @@ export default function App() {
                       <th className="py-2 pr-4">Status</th>
                       <th className="py-2 pr-4">Start</th>
                       <th className="py-2 pr-4">End</th>
+                      <th className="py-2 pr-4">Total Time Spent</th>
                       <th className="py-2 pr-4">Comments</th>
                       <th className="py-2 pr-4">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {items.map((it) => (
+                    {managerItems.map((it) => (
                       <tr key={it.id} className="border-t border-slate-100 align-top">
                         <td className="py-2 pr-4 font-mono">{it.id}</td>
                         <td className="py-2 pr-4">{it.title}</td>
@@ -403,26 +506,19 @@ export default function App() {
                         </td>
                         <td className="py-2 pr-4">{fmt(it.startTime)}</td>
                         <td className="py-2 pr-4">{fmt(it.endTime)}</td>
+                        <td className="py-2 pr-4">{fmtDuration(totalSpentMs(it))}</td>
                         <td className="py-2 pr-4 min-w-[260px]">
                           {it.comments && it.comments.length > 0 ? (
                             <div className="text-xs">
                               <div className="text-slate-500">({it.comments.length}) latest</div>
-                              <div className="text-slate-800">
-                                {fmtShort(it.comments[it.comments.length - 1].text, 40)}
-                              </div>
-                              <div className="text-slate-500">
-                                {new Date(it.comments[it.comments.length - 1].ts).toLocaleString()}
-                              </div>
+                              <div className="text-slate-800">{fmtShort(it.comments[it.comments.length - 1].text, 40)}</div>
+                              <div className="text-slate-500">{new Date(it.comments[it.comments.length - 1].ts).toLocaleString()}</div>
                             </div>
                           ) : (
                             <span className="text-slate-400 text-xs">No comments</span>
                           )}
                           <div>
-                            <button
-                              type="button"
-                              className="mt-1 px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs"
-                              onClick={() => handleAddComment(it)}
-                            >
+                            <button type="button" className="mt-1 px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs" onClick={() => handleAddComment(it)}>
                               Add
                             </button>
                           </div>
@@ -437,7 +533,9 @@ export default function App() {
                                 title="Choose Complaint Handler"
                               >
                                 {CH_NAMES.map((name) => (
-                                  <option key={name} value={name}>{name}</option>
+                                  <option key={name} value={name}>
+                                    {name}
+                                  </option>
                                 ))}
                               </select>
                               <button
@@ -481,6 +579,17 @@ export default function App() {
             </div>
 
             <div className="bg-white rounded-2xl shadow p-4">
+              {/* Search */}
+              <div className="mb-3">
+                <input
+                  type="text"
+                  className="border rounded-xl px-3 py-2 w-full md:w-80"
+                  placeholder="Search your queue…  Use * as wildcard"
+                  value={userQuery}
+                  onChange={(e) => setUserQuery(e.target.value)}
+                />
+              </div>
+
               <div className="overflow-auto">
                 <table className="min-w-full text-sm">
                   <thead>
@@ -493,6 +602,7 @@ export default function App() {
                       <th className="py-2 pr-4">Status</th>
                       <th className="py-2 pr-4">Start</th>
                       <th className="py-2 pr-4">End</th>
+                      <th className="py-2 pr-4">Elapsed</th>
                       <th className="py-2 pr-4">Comments</th>
                       <th className="py-2 pr-4">Actions</th>
                     </tr>
@@ -512,26 +622,19 @@ export default function App() {
                         </td>
                         <td className="py-2 pr-4">{fmt(it.startTime)}</td>
                         <td className="py-2 pr-4">{fmt(it.endTime)}</td>
+                        <td className="py-2 pr-4">{fmtDuration(currentElapsedMs(it))}</td>
                         <td className="py-2 pr-4 min-w-[260px]">
                           {it.comments && it.comments.length > 0 ? (
                             <div className="text-xs">
                               <div className="text-slate-500">({it.comments.length}) latest</div>
-                              <div className="text-slate-800">
-                                {fmtShort(it.comments[it.comments.length - 1].text, 40)}
-                              </div>
-                              <div className="text-slate-500">
-                                {new Date(it.comments[it.comments.length - 1].ts).toLocaleString()}
-                              </div>
+                              <div className="text-slate-800">{fmtShort(it.comments[it.comments.length - 1].text, 40)}</div>
+                              <div className="text-slate-500">{new Date(it.comments[it.comments.length - 1].ts).toLocaleString()}</div>
                             </div>
                           ) : (
                             <span className="text-slate-400 text-xs">No comments</span>
                           )}
                           <div>
-                            <button
-                              type="button"
-                              className="mt-1 px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs"
-                              onClick={() => handleAddComment(it)}
-                            >
+                            <button type="button" className="mt-1 px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs" onClick={() => handleAddComment(it)}>
                               Add
                             </button>
                           </div>
@@ -543,7 +646,7 @@ export default function App() {
                                 type="button"
                                 disabled={!canActOn(it) || isPending(it, "pickup")}
                                 className={`px-3 py-1 rounded-xl ${
-                                  (!canActOn(it) || isPending(it, "pickup")) ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"
+                                  !canActOn(it) || isPending(it, "pickup") ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"
                                 }`}
                                 onClick={() => handlePickUp(it)}
                                 title="Pick up and start processing"
@@ -563,21 +666,19 @@ export default function App() {
                                     title="Choose referral destination"
                                   >
                                     {referralTargets.map((next) => (
-                                      <option key={next} value={next}>{LABEL[next]}</option>
+                                      <option key={next} value={next}>
+                                        {LABEL[next]}
+                                      </option>
                                     ))}
                                   </select>
                                   <button
                                     type="button"
                                     disabled={isPending(it, "referring")}
-                                    className={`px-3 py-1 rounded-xl ${
-                                      isPending(it, "referring") ? "bg-slate-200 text-slate-400" : "bg-purple-600 text-white"
-                                    }`}
+                                    className={`px-3 py-1 rounded-xl ${isPending(it, "referring") ? "bg-slate-200 text-slate-400" : "bg-purple-600 text-white"}`}
                                     onClick={() => {
                                       const next = referSelect[it.id] ?? referralTargets[0];
                                       setPending((p) => ({ ...p, [it.id]: "referring" }));
-                                      handleMove(it, next).finally(() =>
-                                        setPending((p) => ({ ...p, [it.id]: null })) // <-- FIXED: it.id
-                                      );
+                                      handleMove(it, next).finally(() => setPending((p) => ({ ...p, [it.id]: null })));
                                     }}
                                     title={DESC[referSelect[it.id] ?? referralTargets[0]]}
                                   >
@@ -585,13 +686,11 @@ export default function App() {
                                   </button>
                                 </div>
 
-                                {/* Close after refer option */}
+                                {/* Close */}
                                 <button
                                   type="button"
                                   disabled={isPending(it, "ch_complaint_closed")}
-                                  className={`px-3 py-1 rounded-xl ${
-                                    isPending(it, "ch_complaint_closed") ? "bg-slate-200 text-slate-400" : "bg-emerald-600 text-white"
-                                  }`}
+                                  className={`px-3 py-1 rounded-xl ${isPending(it, "ch_complaint_closed") ? "bg-slate-200 text-slate-400" : "bg-emerald-600 text-white"}`}
                                   onClick={() => handleMove(it, "ch_complaint_closed")}
                                   title="Close complaint"
                                 >
@@ -601,17 +700,13 @@ export default function App() {
                             )}
 
                             {/* CH cannot complete referrals here */}
-                            {it.status.startsWith("ref_to_") && (
-                              <span className="text-xs text-slate-400">Waiting on referral team…</span>
-                            )}
+                            {it.status.startsWith("ref_to_") && <span className="text-xs text-slate-400">Waiting on referral team…</span>}
 
                             {it.status === "ch_referral_complete" && it.assignee === currentUser && (
                               <button
                                 type="button"
                                 disabled={isPending(it, "pick_up")}
-                                className={`px-3 py-1 rounded-xl ${
-                                  isPending(it, "pick_up") ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"
-                                }`}
+                                className={`px-3 py-1 rounded-xl ${isPending(it, "pick_up") ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"}`}
                                 onClick={() => handleMove(it, "pick_up")}
                                 title="Re-pick and continue processing"
                               >
@@ -634,6 +729,18 @@ export default function App() {
           <section className="grid gap-4">
             <div className="bg-white rounded-2xl shadow p-4">
               <h2 className="text-lg font-medium mb-3">Referral Queue</h2>
+
+              {/* Search */}
+              <div className="mb-3">
+                <input
+                  type="text"
+                  className="border rounded-xl px-3 py-2 w-full md:w-80"
+                  placeholder="Search referrals…  Use * as wildcard"
+                  value={refQuery}
+                  onChange={(e) => setRefQuery(e.target.value)}
+                />
+              </div>
+
               <div className="overflow-auto">
                 <table className="min-w-full text-sm">
                   <thead>
@@ -646,13 +753,18 @@ export default function App() {
                       <th className="py-2 pr-4">Status</th>
                       <th className="py-2 pr-4">Start</th>
                       <th className="py-2 pr-4">End</th>
+                      <th className="py-2 pr-4">Elapsed</th>
                       <th className="py-2 pr-4">Comments</th>
                       <th className="py-2 pr-4">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {referralItems.length === 0 && (
-                      <tr><td colSpan={10} className="py-6 text-slate-500">No items in referral queues.</td></tr>
+                      <tr>
+                        <td colSpan={11} className="py-6 text-slate-500">
+                          No items in referral queues.
+                        </td>
+                      </tr>
                     )}
                     {referralItems.map((it) => (
                       <tr key={it.id} className="border-t border-slate-100 align-top">
@@ -668,26 +780,19 @@ export default function App() {
                         </td>
                         <td className="py-2 pr-4">{fmt(it.startTime)}</td>
                         <td className="py-2 pr-4">{fmt(it.endTime)}</td>
+                        <td className="py-2 pr-4">{fmtDuration(currentElapsedMs(it))}</td>
                         <td className="py-2 pr-4 min-w-[260px]">
                           {it.comments && it.comments.length > 0 ? (
                             <div className="text-xs">
                               <div className="text-slate-500">({it.comments.length}) latest</div>
-                              <div className="text-slate-800">
-                                {fmtShort(it.comments[it.comments.length - 1].text, 40)}
-                              </div>
-                              <div className="text-slate-500">
-                                {new Date(it.comments[it.comments.length - 1].ts).toLocaleString()}
-                              </div>
+                              <div className="text-slate-800">{fmtShort(it.comments[it.comments.length - 1].text, 40)}</div>
+                              <div className="text-slate-500">{new Date(it.comments[it.comments.length - 1].ts).toLocaleString()}</div>
                             </div>
                           ) : (
                             <span className="text-slate-400 text-xs">No comments</span>
                           )}
                           <div>
-                            <button
-                              type="button"
-                              className="mt-1 px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs"
-                              onClick={() => handleAddComment(it)}
-                            >
+                            <button type="button" className="mt-1 px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs" onClick={() => handleAddComment(it)}>
                               Add
                             </button>
                           </div>
