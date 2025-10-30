@@ -106,20 +106,37 @@ function canTransition(from, to) {
   return ALLOWED_NEXT[from]?.includes(to);
 }
 
+function fmtDate(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  const day = String(d.getDate()).padStart(2, "0");
+  const mon = d.toLocaleString("en-GB", { month: "short" });
+  const yr = d.getFullYear();
+  return `${day}-${mon}-${yr}`;
+}
+
+// Random timestamp between N and M days ago
+function randomDateDaysAgo(minDays = 1, maxDays = 30) {
+  const days = Math.floor(Math.random() * (maxDays - minDays + 1)) + minDays;
+  return Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
 /* ------------------ Sample data + CH list ------------------ */
- const initialItems = [
-  { id: "W-201", title: "Address change complaint", assignee: null, status: "complaint_unallocated", startTime: null, endTime: null },
-  { id: "W-202", title: "Chargeback follow-up",    assignee: "you", status: "ch_review", startTime: null, endTime: null },
-  { id: "W-203", title: "Refund case - #7781",      assignee: "you", status: "pick_up",   startTime: Date.now() - 5 * 60 * 1000, endTime: null },
-  { id: "W-204", title: "Vendor onboarding",        assignee: "bob", status: "ref_to_finance", startTime: Date.now() - 60 * 60 * 1000, endTime: null },
-  { id: "W-205", title: "Policy docs missing",      assignee: "alice", status: "ch_review", startTime: null, endTime: null },
+const seedItems = [
   { id: "W-201", title: "Address change complaint", assignee: null,  status: "complaint_unallocated", startTime: null, endTime: null, comments: [] },
   { id: "W-202", title: "Chargeback follow-up",     assignee: "you", status: "ch_review",             startTime: null, endTime: null, comments: [] },
   { id: "W-203", title: "Refund case - #7781",      assignee: "you", status: "pick_up",               startTime: Date.now() - 5 * 60 * 1000, endTime: null,
     comments: [{ ts: Date.now() - 10 * 60 * 1000, author: "you", text: "Initial review started." }] },
   { id: "W-204", title: "Vendor onboarding",        assignee: "bob", status: "ref_to_finance",        startTime: Date.now() - 60 * 60 * 1000, endTime: null, comments: [] },
   { id: "W-205", title: "Policy docs missing",      assignee: "alice",status: "ch_review",            startTime: null, endTime: null, comments: [] },
- ];
+];
+
+// Attach complaint dates (received + logged) once at init
+const initialItems = seedItems.map((it) => {
+  const received = randomDateDaysAgo(5, 30);     // in last 5–30 days
+  const logged = received + (Math.floor(Math.random() * 4) * 24 * 60 * 60 * 1000); // 0–3 days after
+  return { ...it, receivedDate: received, loggedDate: logged };
+});
 
 const CH_NAMES = ["Alice", "Bob", "Charlie", "Deepa", "Ehsan", "you"]; // sample list
 
@@ -299,6 +316,7 @@ export default function App() {
   const fmtShort = (s, n = 30) => (s.length > n ? s.slice(0, n) + "…" : s);
 
 
+
   const referralTargets = [
     "ref_to_bo_uk",
     "ref_to_bo_ind",
@@ -360,6 +378,8 @@ export default function App() {
                     <tr className="text-left text-slate-500">
                       <th className="py-2 pr-4">ID</th>
                       <th className="py-2 pr-4">Title</th>
+                      <th className="py-2 pr-4">Complaint Received</th>
+                      <th className="py-2 pr-4">Complaint Logged</th>
                       <th className="py-2 pr-4">Assignee</th>
                       <th className="py-2 pr-4">Status</th>
                       <th className="py-2 pr-4">Start</th>
@@ -373,6 +393,8 @@ export default function App() {
                       <tr key={it.id} className="border-t border-slate-100 align-top">
                         <td className="py-2 pr-4 font-mono">{it.id}</td>
                         <td className="py-2 pr-4">{it.title}</td>
+                        <td className="py-2 pr-4">{fmtDate(it.receivedDate)}</td>
+                        <td className="py-2 pr-4">{fmtDate(it.loggedDate)}</td>
                         <td className="py-2 pr-4">{it.assignee ?? "—"}</td>
                         <td className="py-2 pr-4">
                           <span className={`px-2 py-1 rounded-full text-xs ${pill(it.status)}`} title={DESC[it.status]}>
@@ -465,6 +487,8 @@ export default function App() {
                     <tr className="text-left text-slate-500">
                       <th className="py-2 pr-4">ID</th>
                       <th className="py-2 pr-4">Title</th>
+                      <th className="py-2 pr-4">Complaint Received</th>
+                      <th className="py-2 pr-4">Complaint Logged</th>
                       <th className="py-2 pr-4">Assignee</th>
                       <th className="py-2 pr-4">Status</th>
                       <th className="py-2 pr-4">Start</th>
@@ -478,6 +502,8 @@ export default function App() {
                       <tr key={it.id} className="border-t border-slate-100 align-top">
                         <td className="py-2 pr-4 font-mono">{it.id}</td>
                         <td className="py-2 pr-4">{it.title}</td>
+                        <td className="py-2 pr-4">{fmtDate(it.receivedDate)}</td>
+                        <td className="py-2 pr-4">{fmtDate(it.loggedDate)}</td>
                         <td className="py-2 pr-4">{it.assignee ?? "—"}</td>
                         <td className="py-2 pr-4">
                           <span className={`px-2 py-1 rounded-full text-xs ${pill(it.status)}`} title={DESC[it.status]}>
@@ -614,6 +640,8 @@ export default function App() {
                     <tr className="text-left text-slate-500">
                       <th className="py-2 pr-4">ID</th>
                       <th className="py-2 pr-4">Title</th>
+                      <th className="py-2 pr-4">Complaint Received</th>
+                      <th className="py-2 pr-4">Complaint Logged</th>
                       <th className="py-2 pr-4">Assignee</th>
                       <th className="py-2 pr-4">Status</th>
                       <th className="py-2 pr-4">Start</th>
@@ -624,12 +652,14 @@ export default function App() {
                   </thead>
                   <tbody>
                     {referralItems.length === 0 && (
-                      <tr><td colSpan={7} className="py-6 text-slate-500">No items in referral queues.</td></tr>
+                      <tr><td colSpan={10} className="py-6 text-slate-500">No items in referral queues.</td></tr>
                     )}
                     {referralItems.map((it) => (
                       <tr key={it.id} className="border-t border-slate-100 align-top">
                         <td className="py-2 pr-4 font-mono">{it.id}</td>
                         <td className="py-2 pr-4">{it.title}</td>
+                        <td className="py-2 pr-4">{fmtDate(it.receivedDate)}</td>
+                        <td className="py-2 pr-4">{fmtDate(it.loggedDate)}</td>
                         <td className="py-2 pr-4">{it.assignee ?? "—"}</td>
                         <td className="py-2 pr-4">
                           <span className={`px-2 py-1 rounded-full text-xs ${pill(it.status)}`} title={DESC[it.status]}>
