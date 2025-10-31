@@ -468,7 +468,7 @@ React.useEffect(() => {
         {/* Tabs */}
         <div className="mb-6 flex gap-2 rounded-2xl bg-gradient-to-r from-sky-50 via-indigo-50 to-cyan-50 p-2 shadow-sm ring-1 ring-slate-200">
           <button
-            className={`flex-1 rounded-xl px-4 py-2 text-sm font-medium transition ${
+            className={`flex-1 rounded-xl px-4 py-2 text-sm font-medium transition hover:translate-y-[-1px] hover:shadow-md ${
               tab === "manager"
                 ? "bg-gradient-to-r from-blue-500 to-indigo-500 text-white shadow"
                 : "bg-white/70 text-slate-700 hover:bg-white"
@@ -479,7 +479,7 @@ React.useEffect(() => {
           </button>
 
           <button
-            className={`flex-1 rounded-xl px-4 py-2 text-sm font-medium transition ${
+            className={`flex-1 rounded-xl px-4 py-2 text-sm font-medium transition hover:translate-y-[-1px] hover:shadow-md ${
               tab === "user"
                 ? "bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow"
                 : "bg-white/70 text-slate-700 hover:bg-white"
@@ -490,7 +490,7 @@ React.useEffect(() => {
           </button>
 
           <button
-            className={`flex-1 rounded-xl px-4 py-2 text-sm font-medium transition ${
+            className={`flex-1 rounded-xl px-4 py-2 text-sm font-medium transition hover:translate-y-[-1px] hover:shadow-md ${
               tab === "referrals"
                 ? "bg-gradient-to-r from-purple-500 to-fuchsia-500 text-white shadow"
                 : "bg-white/70 text-slate-700 hover:bg-white"
