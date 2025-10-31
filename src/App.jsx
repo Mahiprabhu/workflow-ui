@@ -321,6 +321,14 @@ export default function App() {
   // comments modal
   const [commentsItem, setCommentsItem] = useState(null);
 
+  // Force a re-render once per second so elapsed/spent timers update live
+const [tick, setTick] = useState(0);
+React.useEffect(() => {
+  const id = setInterval(() => setTick(t => t + 1), 1000);
+  return () => clearInterval(id);
+}, []);
+
+
   /* ---- Derived ---- */
   const summary = useMemo(() => {
     const counts = Object.fromEntries(STATUSES.map((s) => [s, 0]));
@@ -413,6 +421,9 @@ export default function App() {
 
   /* ---- UI helpers ---- */
   const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : "—");
+  const TABLE_HEAD_GRADIENT =
+  "bg-gradient-to-r from-indigo-50 via-sky-50 to-cyan-50 text-slate-700";
+
   const pill = (status) =>
     ({
       complaint_unallocated: "bg-gray-100 text-gray-800",
@@ -498,9 +509,9 @@ export default function App() {
                 />
               </div>
 
-              <div className="overflow-auto">
+              <div className="overflow-auto rounded-2xl ring-1 ring-slate-100 hover:ring-slate-200 transition">
                 <table className="min-w-full text-sm">
-                  <thead className="bg-slate-50 text-slate-600">
+                  <thead className={TABLE_HEAD_GRADIENT + " border-b border-slate-200"}>
                     <tr className="text-left">
                       <th className="py-2 pr-4">ID</th>
                       <th className="py-2 pr-4">Title</th>
@@ -604,9 +615,9 @@ export default function App() {
                 />
               </div>
 
-              <div className="overflow-auto">
+              <div className="overflow-auto rounded-2xl ring-1 ring-slate-100 hover:ring-slate-200 transition">
                 <table className="min-w-full text-sm">
-                  <thead className="bg-slate-50 text-slate-600">
+                  <thead className={TABLE_HEAD_GRADIENT + " border-b border-slate-200"}>
                     <tr className="text-left">
                       <th className="py-2 pr-4">ID</th>
                       <th className="py-2 pr-4">Title</th>
@@ -748,9 +759,9 @@ export default function App() {
                 />
               </div>
 
-              <div className="overflow-auto">
+              <div className="overflow-auto rounded-2xl ring-1 ring-slate-100 hover:ring-slate-200 transition">
                 <table className="min-w-full text-sm">
-                  <thead className="bg-slate-50 text-slate-600">
+                  <thead className={TABLE_HEAD_GRADIENT + " border-b border-slate-200"}>
                     <tr className="text-left">
                       <th className="py-2 pr-4">ID</th>
                       <th className="py-2 pr-4">Title</th>
