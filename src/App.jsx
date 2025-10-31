@@ -1,14 +1,11 @@
 import React, { useMemo, useState } from "react";
 
 /**
- * Workflow UI — Step 3 (UI-only)
- * - Expanded complaint statuses + tooltips
- * - Manager allocation: Complaint Unallocated -> CH Review (choose CH from dropdown)
- * - User console: CH picks up, can Refer (dropdown) or Close
- * - Referral Teams console: can mark referral complete (CH cannot)
- * - Start time on Pick up; End time when leaving Pick up; cumulative spentMs
- * - Toasts + pending/disabled logic
- * - Per-console search; Manager rollups
+ * Workflow UI — Step 3 (UI-only) + Enhancements
+ * - Comments: full history in a modal ("View all (N)") + add comment
+ * - Rollup tiles: modern gradient stat cards
+ * - Slightly styled table headers for all consoles
+ * - All Step 3 features retained (allocation, refer, close, timing, search)
  */
 
 /* ------------------ Status model ------------------ */
@@ -71,8 +68,8 @@ const DESC = {
 
 /* ------------------ Transition rules ------------------ */
 const ALLOWED_NEXT = {
-  complaint_unallocated: ["ch_review"], // manager allocates to CH review
-  ch_review: ["pick_up"], // CH picks up to start work
+  complaint_unallocated: ["ch_review"],
+  ch_review: ["pick_up"],
   pick_up: [
     "ch_complaint_closed",
     "ref_to_bo_uk",
@@ -87,7 +84,6 @@ const ALLOWED_NEXT = {
     "rwol_product",
     "ref_to_timeline_update",
   ],
-  // referral queues can return to CH
   ref_to_bo_uk: ["ch_referral_complete"],
   ref_to_bo_ind: ["ch_referral_complete"],
   ref_to_finance: ["ch_referral_complete"],
@@ -97,7 +93,7 @@ const ALLOWED_NEXT = {
   ref_to_client: ["ch_referral_complete"],
   ref_to_rs: ["ch_referral_complete"],
   ref_to_ph: ["ch_referral_complete"],
-  ch_referral_complete: ["ch_review", "pick_up"], // back with CH
+  ch_referral_complete: ["ch_review", "pick_up"],
   ch_complaint_closed: [],
   rwol_product: ["ch_review", "pick_up"],
   ref_to_timeline_update: ["ch_referral_complete"],
@@ -116,14 +112,14 @@ function fmtDate(ts) {
   const yr = d.getFullYear();
   return `${day}-${mon}-${yr}`;
 }
-
-// Random timestamp between N and M days ago
+function fmtDateTime(ts) {
+  if (!ts) return "—";
+  return new Date(ts).toLocaleString();
+}
 function randomDateDaysAgo(minDays = 1, maxDays = 30) {
   const days = Math.floor(Math.random() * (maxDays - minDays + 1)) + minDays;
   return Date.now() - days * 24 * 60 * 60 * 1000;
 }
-
-// Human readable duration like 1h 03m 12s
 function fmtDuration(ms) {
   if (!ms || ms < 1000) return "0s";
   const s = Math.floor(ms / 1000);
@@ -136,23 +132,18 @@ function fmtDuration(ms) {
   parts.push(`${String(sec).padStart(2, "0")}s`);
   return parts.join(" ");
 }
-
-// Elapsed for the *current* session (user & referral tables)
 function currentElapsedMs(it) {
   if (it.startTime && !it.endTime) return Date.now() - it.startTime;
   if (it.startTime && it.endTime) return it.endTime - it.startTime;
   return 0;
 }
-
-// Total spent for manager (cumulative + any active)
 function totalSpentMs(it) {
-  const active = it.status === "pick_up" && it.startTime && !it.endTime ? (Date.now() - it.startTime) : 0;
+  const active = it.status === "pick_up" && it.startTime && !it.endTime ? Date.now() - it.startTime : 0;
   return (it.spentMs || 0) + active;
 }
-
 function matchesFilter(it, q) {
   if (!q) return true;
-  const needle = q.trim().toLowerCase().replace(/\*/g, ""); // simple wildcard: ignore '*'
+  const needle = q.trim().toLowerCase().replace(/\*/g, "");
   if (!needle) return true;
   const haystack = [
     it.id,
@@ -166,65 +157,51 @@ function matchesFilter(it, q) {
   return haystack.includes(needle);
 }
 
-/* ------------------ Sample data + CH list ------------------ */
+/* ------------------ Sample data ------------------ */
 const seedItems = [
   { id: "W-201", title: "Address change complaint", assignee: null,  status: "complaint_unallocated", startTime: null, endTime: null, spentMs: 0, comments: [] },
-  { id: "W-202", title: "Chargeback follow-up",     assignee: "you", status: "ch_review",             startTime: null, endTime: null, spentMs: 0, comments: [] },
+  { id: "W-202", title: "Chargeback follow-up",     assignee: "mahi", status: "ch_review",             startTime: null, endTime: null, spentMs: 0, comments: [] },
   {
     id: "W-203",
     title: "Refund case - #7781",
-    assignee: "you",
+    assignee: "mahi",
     status: "pick_up",
     startTime: Date.now() - 5 * 60 * 1000,
     endTime: null,
     spentMs: 0,
-    comments: [{ ts: Date.now() - 10 * 60 * 1000, author: "you", text: "Initial review started." }],
+    comments: [{ ts: Date.now() - 10 * 60 * 1000, author: "mahi", text: "Initial review started." }],
   },
   { id: "W-204", title: "Vendor onboarding",        assignee: "bob",   status: "ref_to_finance", startTime: Date.now() - 60 * 60 * 1000, endTime: null, spentMs: 0, comments: [] },
   { id: "W-205", title: "Policy docs missing",      assignee: "alice", status: "ch_review",      startTime: null, endTime: null, spentMs: 0, comments: [] },
 ];
-
-// Attach complaint dates (received + logged) once at init
 const initialItems = seedItems.map((it) => {
-  const received = randomDateDaysAgo(5, 30); // last 5–30 days
+  const received = randomDateDaysAgo(5, 30);
   const logged = received + Math.floor(Math.random() * 4) * 24 * 60 * 60 * 1000; // 0–3 days after
   return { ...it, receivedDate: received, loggedDate: logged };
 });
-
-const CH_NAMES = ["Alice", "Bob", "Charlie", "Deepa", "Ehsan", "you"]; // sample list
+const CH_NAMES = ["Alice", "Bob", "Charlie", "Deepa", "Ehsan", "mahi"];
 
 /* ------------------ Simulated API (UI-only) ------------------ */
 function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
-
 async function apiAllocateToCH(item, handlerName) {
   await delay(500 + Math.random() * 400);
   if (!canTransition(item.status, "ch_review")) throw new Error("Cannot allocate from current status.");
   return { ...item, assignee: handlerName, status: "ch_review" };
 }
-
-async function apiPickUp(item, { currentUser, youHaveActive }) {
+async function apiPickUp(item, { currentUser, mahiHaveActive }) {
   await delay(600 + Math.random() * 400);
-  if (youHaveActive && !(item.assignee === currentUser && item.status === "pick_up")) {
-    throw new Error("You already have an active item. Complete or refer it before picking another.");
+  if (mahiHaveActive && !(item.assignee === currentUser && item.status === "pick_up")) {
+    throw new Error("mahi already have an active item. Complete or refer it before picking another.");
   }
   const next = "pick_up";
   if (!canTransition(item.status, next)) throw new Error("Invalid transition to Pick up.");
-  return {
-    ...item,
-    assignee: currentUser,
-    status: next,
-    startTime: item.startTime ?? Date.now(), // keep if already running
-    endTime: null, // open session
-  };
+  return { ...item, assignee: currentUser, status: next, startTime: item.startTime ?? Date.now(), endTime: null };
 }
-
 async function apiMove(item, next) {
   await delay(500 + Math.random() * 400);
-  if (!canTransition(item.status, next)) {
-    throw new Error(`Invalid transition from ${LABEL[item.status]} to ${LABEL[next]}.`);
-  }
+  if (!canTransition(item.status, next)) throw new Error(`Invalid transition from ${LABEL[item.status]} to ${LABEL[next]}.`);
   const leavingPick = item.status === "pick_up" && next !== "pick_up";
   if (leavingPick && item.startTime) {
     const now = Date.now();
@@ -232,30 +209,24 @@ async function apiMove(item, next) {
     return {
       ...item,
       status: next,
-      startTime: null,                 // close session
-      endTime: now,                    // stamp last session end
+      startTime: null,
+      endTime: now,
       spentMs: (item.spentMs || 0) + Math.max(0, session),
     };
   }
-  // default path (not leaving pick_up)
   return { ...item, status: next };
 }
 
-/* ------------------ Toasts ------------------ */
+/* ------------------ UI atoms ------------------ */
 function Toasts({ toasts, remove }) {
   return (
     <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-50">
       {toasts.map((t) => (
-        <div
-          key={t.id}
-          className={`px-3 py-2 rounded-xl shadow text-sm ${t.type === "error" ? "bg-red-100 text-red-900" : "bg-emerald-100 text-emerald-900"}`}
-        >
+        <div key={t.id} className={`px-3 py-2 rounded-xl shadow text-sm ${t.type === "error" ? "bg-red-100 text-red-900" : "bg-emerald-100 text-emerald-900"}`}>
           <div className="flex items-start gap-2">
             <div className="font-medium">{t.type === "error" ? "Error" : "Success"}</div>
             <div className="opacity-80">{t.msg}</div>
-            <button className="ml-2 opacity-60 hover:opacity-100" onClick={() => remove(t.id)}>
-              ✕
-            </button>
+            <button className="ml-2 opacity-60 hover:opacity-100" onClick={() => remove(t.id)}>✕</button>
           </div>
         </div>
       ))}
@@ -263,24 +234,92 @@ function Toasts({ toasts, remove }) {
   );
 }
 
+// Nice colorful stat card
+function StatCard({ title, value, gradient }) {
+  const g = {
+    blue: "from-sky-500 to-blue-600 ring-sky-700/30",
+    amber: "from-amber-500 to-orange-600 ring-amber-700/30",
+    green: "from-emerald-500 to-green-600 ring-emerald-700/30",
+  }[gradient];
+  return (
+    <div className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${g} text-white shadow-lg ring-1`}>
+      <div className="p-5">
+        <div className="text-xs uppercase tracking-wider/loose opacity-90">{title}</div>
+        <div className="mt-1 text-4xl font-bold drop-shadow-sm">{value}</div>
+      </div>
+      {/* soft glow */}
+      <div className="pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full bg-white/10 blur-2xl" />
+      <div className="pointer-events-none absolute right-6 top-6 h-6 w-6 rounded-full bg-white/20" />
+    </div>
+  );
+}
+
+// Small modal for comments history
+function Modal({ open, onClose, children, title }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4">
+      <div className="w-full max-w-2xl rounded-2xl bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b px-5 py-3">
+          <h3 className="text-lg font-medium">{title}</h3>
+          <button className="rounded-lg px-2 py-1 text-slate-600 hover:bg-slate-100" onClick={onClose}>✕</button>
+        </div>
+        <div className="max-h-[60vh] overflow-auto px-5 py-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+// Reusable comments cell: preview + actions
+function CommentsCell({ item, onAdd, onViewAll }) {
+  const c = item.comments || [];
+  const latest = c[c.length - 1];
+  return (
+    <div className="min-w-[260px]">
+      {c.length > 0 ? (
+        <div className="text-xs">
+          <div className="text-slate-500 mb-0.5">
+            {/* show (N) and indicate it's showing the latest preview */}
+            ({c.length}) latest
+          </div>
+          <div className="text-slate-800">{latest ? (latest.text.length > 40 ? latest.text.slice(0, 40) + "…" : latest.text) : ""}</div>
+          <div className="text-slate-500">{latest ? fmtDateTime(latest.ts) : ""}</div>
+        </div>
+      ) : (
+        <span className="text-slate-400 text-xs">No comments</span>
+      )}
+      <div className="mt-1 flex gap-2">
+        <button type="button" className="px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs" onClick={onAdd}>
+          Add
+        </button>
+        <button type="button" className="px-2 py-0.5 rounded-lg bg-slate-100 text-slate-800 text-xs hover:bg-slate-200" onClick={onViewAll} disabled={c.length === 0}>
+          View all
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ------------------ App ------------------ */
 export default function App() {
-  // search boxes (one per console)
+  // searches
   const [managerQuery, setManagerQuery] = useState("");
   const [userQuery, setUserQuery] = useState("");
   const [refQuery, setRefQuery] = useState("");
 
   const [items, setItems] = useState(initialItems);
-  const [tab, setTab] = useState("manager"); // "manager" | "user" | "referrals"
-  const [allocSelect, setAllocSelect] = useState({}); // { [itemId]: handlerName }
-  const [referSelect, setReferSelect] = useState({}); // { [itemId]: referralStatus }
-  const currentUser = "you"; // TODO: auth later
+  const [tab, setTab] = useState("manager");
+  const [allocSelect, setAllocSelect] = useState({});
+  const [referSelect, setReferSelect] = useState({});
+  const currentUser = "mahi";
 
   const [pending, setPending] = useState({});
   const [toasts, setToasts] = useState([]);
-  const pushToast = (msg, type = "success") =>
-    setToasts((ts) => [...ts, { id: Math.random().toString(36).slice(2), msg, type }]);
+  const pushToast = (msg, type = "success") => setToasts((ts) => [...ts, { id: Math.random().toString(36).slice(2), msg, type }]);
   const removeToast = (id) => setToasts((ts) => ts.filter((t) => t.id !== id));
+
+  // comments modal
+  const [commentsItem, setCommentsItem] = useState(null);
 
   /* ---- Derived ---- */
   const summary = useMemo(() => {
@@ -296,21 +335,18 @@ export default function App() {
     return { total, pipeline, completed };
   }, [items]);
 
-  // Manager list (filtered)
   const managerItems = useMemo(() => items.filter((i) => matchesFilter(i, managerQuery)), [items, managerQuery]);
 
-  // User lists (filtered)
-  const rawYourItems = useMemo(
+  const rawmahirItems = useMemo(
     () => items.filter((i) => i.assignee === currentUser || (i.assignee === null && i.status === "complaint_unallocated")),
     [items]
   );
-  const yourItems = useMemo(() => rawYourItems.filter((i) => matchesFilter(i, userQuery)), [rawYourItems, userQuery]);
+  const mahirItems = useMemo(() => rawmahirItems.filter((i) => matchesFilter(i, userQuery)), [rawmahirItems, userQuery]);
 
-  // Referral lists (filtered)
   const rawRefItems = useMemo(() => items.filter((i) => i.status.startsWith("ref_to_")), [items]);
   const referralItems = useMemo(() => rawRefItems.filter((i) => matchesFilter(i, refQuery)), [rawRefItems, refQuery]);
 
-  const youHaveActive = useMemo(
+  const mahiHaveActive = useMemo(
     () => items.some((i) => i.assignee === currentUser && i.status === "pick_up"),
     [items]
   );
@@ -322,8 +358,8 @@ export default function App() {
   };
 
   const canActOn = (it) => {
-    if (it.assignee === currentUser && it.status === "pick_up") return true; // can always act on your active
-    return !youHaveActive; // otherwise block if you already have an active one
+    if (it.assignee === currentUser && it.status === "pick_up") return true;
+    return !mahiHaveActive;
   };
 
   /* ---- Actions ---- */
@@ -344,7 +380,7 @@ export default function App() {
   async function handlePickUp(item) {
     setPending((p) => ({ ...p, [item.id]: "pickup" }));
     try {
-      const updated = await apiPickUp(item, { currentUser, youHaveActive });
+      const updated = await apiPickUp(item, { currentUser, mahiHaveActive });
       setItems((prev) => prev.map((it) => (it.id === item.id ? updated : it)));
       pushToast(`Picked up ${item.id}`);
     } catch (e) {
@@ -397,8 +433,6 @@ export default function App() {
       ref_to_timeline_update: "bg-purple-100 text-purple-800",
     }[status]);
 
-  const fmtShort = (s, n = 30) => (s.length > n ? s.slice(0, n) + "…" : s);
-
   const referralTargets = [
     "ref_to_bo_uk",
     "ref_to_bo_ind",
@@ -414,7 +448,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-6">
-      <div className="max-w-7xl mx-auto">
+      <div className="mx-auto max-w-7xl">
         <header className="mb-6">
           <h1 className="text-2xl font-semibold">Complaints Workflow Tracker</h1>
           <p className="text-sm text-slate-600">Simplified Workflow Engine</p>
@@ -435,39 +469,29 @@ export default function App() {
 
         {/* ---------- Manager Console ---------- */}
         {tab === "manager" && (
-          <section className="grid md:grid-cols-4 lg:grid-cols-6 gap-4">
-            {/* Rollups */}
-            <div className="bg-white rounded-2xl shadow p-4 md:col-span-4 lg:col-span-6">
-              <div className="grid sm:grid-cols-3 gap-4">
-                <div className="rounded-xl border p-4">
-                  <div className="text-[11px] uppercase tracking-wide text-slate-500">Total complaints received</div>
-                  <div className="text-3xl font-bold mt-1">{totals.total}</div>
-                </div>
-                <div className="rounded-xl border p-4">
-                  <div className="text-[11px] uppercase tracking-wide text-slate-500">Total complaints in pipeline</div>
-                  <div className="text-3xl font-bold mt-1">{totals.pipeline}</div>
-                </div>
-                <div className="rounded-xl border p-4">
-                  <div className="text-[11px] uppercase tracking-wide text-slate-500">Total complaints completed</div>
-                  <div className="text-3xl font-bold mt-1">{totals.completed}</div>
-                </div>
-              </div>
+          <section className="grid gap-4 md:grid-cols-4 lg:grid-cols-6">
+            {/* Rollups: colorful stat cards */}
+            <div className="md:col-span-4 lg:col-span-6 grid gap-4 sm:grid-cols-3">
+              <StatCard title="Total complaints received" value={totals.total} gradient="blue" />
+              <StatCard title="Total complaints in pipeline" value={totals.pipeline} gradient="amber" />
+              <StatCard title="Total complaints completed" value={totals.completed} gradient="green" />
             </div>
 
             {/* Status tiles */}
             {STATUSES.map((s) => (
-              <div key={s} className="bg-white rounded-2xl shadow p-4" title={DESC[s]}>
+              <div key={s} className="bg-white rounded-2xl shadow p-4 ring-1 ring-slate-100 hover:shadow-md transition" title={DESC[s]}>
                 <div className="text-[11px] uppercase tracking-wide text-slate-500">{LABEL[s]}</div>
-                <div className="text-3xl font-bold mt-1">{summary[s]}</div>
+                <div className="mt-1 text-3xl font-bold">{summary[s]}</div>
               </div>
             ))}
 
-            <div className="md:col-span-6 bg-white rounded-2xl shadow p-4 mt-2">
-              <h2 className="text-lg font-medium mb-3">All Work Items</h2>
+            {/* Grid */}
+            <div className="md:col-span-6 mt-2 rounded-2xl bg-white p-4 shadow">
+              <h2 className="mb-3 text-lg font-medium">All Work Items</h2>
               <div className="mb-3">
                 <input
                   type="text"
-                  className="border rounded-xl px-3 py-2 w-full md:w-80"
+                  className="w-full rounded-xl border px-3 py-2 md:w-80"
                   placeholder="Search (id, title, assignee, status, comments)…  Use * as wildcard"
                   value={managerQuery}
                   onChange={(e) => setManagerQuery(e.target.value)}
@@ -476,8 +500,8 @@ export default function App() {
 
               <div className="overflow-auto">
                 <table className="min-w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-slate-500">
+                  <thead className="bg-slate-50 text-slate-600">
+                    <tr className="text-left">
                       <th className="py-2 pr-4">ID</th>
                       <th className="py-2 pr-4">Title</th>
                       <th className="py-2 pr-4">Complaint Received</th>
@@ -493,41 +517,32 @@ export default function App() {
                   </thead>
                   <tbody>
                     {managerItems.map((it) => (
-                      <tr key={it.id} className="border-t border-slate-100 align-top">
+                      <tr key={it.id} className="align-top border-t border-slate-100">
                         <td className="py-2 pr-4 font-mono">{it.id}</td>
                         <td className="py-2 pr-4">{it.title}</td>
                         <td className="py-2 pr-4">{fmtDate(it.receivedDate)}</td>
                         <td className="py-2 pr-4">{fmtDate(it.loggedDate)}</td>
                         <td className="py-2 pr-4">{it.assignee ?? "—"}</td>
                         <td className="py-2 pr-4">
-                          <span className={`px-2 py-1 rounded-full text-xs ${pill(it.status)}`} title={DESC[it.status]}>
+                          <span className={`rounded-full px-2 py-1 text-xs ${pill(it.status)}`} title={DESC[it.status]}>
                             {LABEL[it.status]}
                           </span>
                         </td>
                         <td className="py-2 pr-4">{fmt(it.startTime)}</td>
                         <td className="py-2 pr-4">{fmt(it.endTime)}</td>
                         <td className="py-2 pr-4">{fmtDuration(totalSpentMs(it))}</td>
-                        <td className="py-2 pr-4 min-w-[260px]">
-                          {it.comments && it.comments.length > 0 ? (
-                            <div className="text-xs">
-                              <div className="text-slate-500">({it.comments.length}) latest</div>
-                              <div className="text-slate-800">{fmtShort(it.comments[it.comments.length - 1].text, 40)}</div>
-                              <div className="text-slate-500">{new Date(it.comments[it.comments.length - 1].ts).toLocaleString()}</div>
-                            </div>
-                          ) : (
-                            <span className="text-slate-400 text-xs">No comments</span>
-                          )}
-                          <div>
-                            <button type="button" className="mt-1 px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs" onClick={() => handleAddComment(it)}>
-                              Add
-                            </button>
-                          </div>
+                        <td className="py-2 pr-4">
+                          <CommentsCell
+                            item={it}
+                            onAdd={() => handleAddComment(it)}
+                            onViewAll={() => setCommentsItem(it)}
+                          />
                         </td>
-                        <td className="py-2 pr-4 min-w-[320px]">
+                        <td className="min-w-[320px] py-2 pr-4">
                           {it.status === "complaint_unallocated" ? (
                             <div className="flex items-center gap-2">
                               <select
-                                className="border rounded-xl px-2 py-1"
+                                className="rounded-xl border px-2 py-1"
                                 value={allocSelect[it.id] ?? CH_NAMES[0]}
                                 onChange={(e) => setAllocSelect((s) => ({ ...s, [it.id]: e.target.value }))}
                                 title="Choose Complaint Handler"
@@ -540,7 +555,7 @@ export default function App() {
                               </select>
                               <button
                                 type="button"
-                                className={`px-3 py-1 rounded-xl ${isPending(it, "allocate") ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"}`}
+                                className={`rounded-xl px-3 py-1 ${isPending(it, "allocate") ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"}`}
                                 onClick={() => handleAllocate(it)}
                                 disabled={isPending(it, "allocate")}
                                 title="Allocate to selected CH (moves to CH Review)"
@@ -549,7 +564,7 @@ export default function App() {
                               </button>
                             </div>
                           ) : (
-                            <span className="text-slate-400 text-xs">—</span>
+                            <span className="text-xs text-slate-400">—</span>
                           )}
                         </td>
                       </tr>
@@ -561,30 +576,29 @@ export default function App() {
           </section>
         )}
 
-        {/* ---------- User Console (CH) ---------- */}
+        {/* ---------- User Console ---------- */}
         {tab === "user" && (
           <section className="grid gap-4">
-            <div className="bg-white rounded-2xl shadow p-4 flex items-center justify-between">
+            <div className="flex items-center justify-between rounded-2xl bg-white p-4 shadow">
               <div>
-                <h2 className="text-lg font-medium">Your Queue</h2>
+                <h2 className="text-lg font-medium">mahir Queue</h2>
                 <p className="text-sm text-slate-500">
-                  Signed in as <span className="font-medium">{currentUser}</span>
+                  Signed in as <span className="font-medium">mahi</span>
                 </p>
               </div>
-              {youHaveActive ? (
-                <div className="text-sm px-3 py-1 rounded-full bg-amber-100 text-amber-800">You have an active item</div>
+              {mahiHaveActive ? (
+                <div className="rounded-full bg-amber-100 px-3 py-1 text-sm text-amber-800">mahi have an active item</div>
               ) : (
-                <div className="text-sm px-3 py-1 rounded-full bg-emerald-100 text-emerald-800">No active item</div>
+                <div className="rounded-full bg-emerald-100 px-3 py-1 text-sm text-emerald-800">No active item</div>
               )}
             </div>
 
-            <div className="bg-white rounded-2xl shadow p-4">
-              {/* Search */}
+            <div className="rounded-2xl bg-white p-4 shadow">
               <div className="mb-3">
                 <input
                   type="text"
-                  className="border rounded-xl px-3 py-2 w-full md:w-80"
-                  placeholder="Search your queue…  Use * as wildcard"
+                  className="w-full rounded-xl border px-3 py-2 md:w-80"
+                  placeholder="Search mahir queue…  Use * as wildcard"
                   value={userQuery}
                   onChange={(e) => setUserQuery(e.target.value)}
                 />
@@ -592,8 +606,8 @@ export default function App() {
 
               <div className="overflow-auto">
                 <table className="min-w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-slate-500">
+                  <thead className="bg-slate-50 text-slate-600">
+                    <tr className="text-left">
                       <th className="py-2 pr-4">ID</th>
                       <th className="py-2 pr-4">Title</th>
                       <th className="py-2 pr-4">Complaint Received</th>
@@ -608,46 +622,31 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {yourItems.map((it) => (
-                      <tr key={it.id} className="border-t border-slate-100 align-top">
+                    {mahirItems.map((it) => (
+                      <tr key={it.id} className="align-top border-t border-slate-100">
                         <td className="py-2 pr-4 font-mono">{it.id}</td>
                         <td className="py-2 pr-4">{it.title}</td>
                         <td className="py-2 pr-4">{fmtDate(it.receivedDate)}</td>
                         <td className="py-2 pr-4">{fmtDate(it.loggedDate)}</td>
                         <td className="py-2 pr-4">{it.assignee ?? "—"}</td>
                         <td className="py-2 pr-4">
-                          <span className={`px-2 py-1 rounded-full text-xs ${pill(it.status)}`} title={DESC[it.status]}>
+                          <span className={`rounded-full px-2 py-1 text-xs ${pill(it.status)}`} title={DESC[it.status]}>
                             {LABEL[it.status]}
                           </span>
                         </td>
                         <td className="py-2 pr-4">{fmt(it.startTime)}</td>
                         <td className="py-2 pr-4">{fmt(it.endTime)}</td>
                         <td className="py-2 pr-4">{fmtDuration(currentElapsedMs(it))}</td>
-                        <td className="py-2 pr-4 min-w-[260px]">
-                          {it.comments && it.comments.length > 0 ? (
-                            <div className="text-xs">
-                              <div className="text-slate-500">({it.comments.length}) latest</div>
-                              <div className="text-slate-800">{fmtShort(it.comments[it.comments.length - 1].text, 40)}</div>
-                              <div className="text-slate-500">{new Date(it.comments[it.comments.length - 1].ts).toLocaleString()}</div>
-                            </div>
-                          ) : (
-                            <span className="text-slate-400 text-xs">No comments</span>
-                          )}
-                          <div>
-                            <button type="button" className="mt-1 px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs" onClick={() => handleAddComment(it)}>
-                              Add
-                            </button>
-                          </div>
+                        <td className="py-2 pr-4">
+                          <CommentsCell item={it} onAdd={() => handleAddComment(it)} onViewAll={() => setCommentsItem(it)} />
                         </td>
-                        <td className="py-2 pr-4 min-w-[360px]">
-                          <div className="flex flex-wrap gap-2 items-center">
+                        <td className="min-w-[360px] py-2 pr-4">
+                          <div className="flex flex-wrap items-center gap-2">
                             {it.status === "ch_review" && it.assignee === currentUser && (
                               <button
                                 type="button"
                                 disabled={!canActOn(it) || isPending(it, "pickup")}
-                                className={`px-3 py-1 rounded-xl ${
-                                  !canActOn(it) || isPending(it, "pickup") ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"
-                                }`}
+                                className={`rounded-xl px-3 py-1 ${!canActOn(it) || isPending(it, "pickup") ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"}`}
                                 onClick={() => handlePickUp(it)}
                                 title="Pick up and start processing"
                               >
@@ -657,15 +656,25 @@ export default function App() {
 
                             {it.status === "pick_up" && it.assignee === currentUser && (
                               <>
-                                {/* Refer first */}
                                 <div className="flex items-center gap-2">
                                   <select
-                                    className="border rounded-xl px-2 py-1"
-                                    value={referSelect[it.id] ?? referralTargets[0]}
+                                    className="rounded-xl border px-2 py-1"
+                                    value={referSelect[it.id] ?? "ref_to_bo_uk"}
                                     onChange={(e) => setReferSelect((s) => ({ ...s, [it.id]: e.target.value }))}
                                     title="Choose referral destination"
                                   >
-                                    {referralTargets.map((next) => (
+                                    {[
+                                      "ref_to_bo_uk",
+                                      "ref_to_bo_ind",
+                                      "ref_to_finance",
+                                      "ref_to_aps",
+                                      "ref_to_cuw",
+                                      "ref_to_fct",
+                                      "ref_to_client",
+                                      "ref_to_rs",
+                                      "ref_to_ph",
+                                      "ref_to_timeline_update",
+                                    ].map((next) => (
                                       <option key={next} value={next}>
                                         {LABEL[next]}
                                       </option>
@@ -674,13 +683,13 @@ export default function App() {
                                   <button
                                     type="button"
                                     disabled={isPending(it, "referring")}
-                                    className={`px-3 py-1 rounded-xl ${isPending(it, "referring") ? "bg-slate-200 text-slate-400" : "bg-purple-600 text-white"}`}
+                                    className={`rounded-xl px-3 py-1 ${isPending(it, "referring") ? "bg-slate-200 text-slate-400" : "bg-purple-600 text-white"}`}
                                     onClick={() => {
-                                      const next = referSelect[it.id] ?? referralTargets[0];
+                                      const next = referSelect[it.id] ?? "ref_to_bo_uk";
                                       setPending((p) => ({ ...p, [it.id]: "referring" }));
                                       handleMove(it, next).finally(() => setPending((p) => ({ ...p, [it.id]: null })));
                                     }}
-                                    title={DESC[referSelect[it.id] ?? referralTargets[0]]}
+                                    title={DESC[referSelect[it.id] ?? "ref_to_bo_uk"]}
                                   >
                                     Refer
                                   </button>
@@ -690,7 +699,7 @@ export default function App() {
                                 <button
                                   type="button"
                                   disabled={isPending(it, "ch_complaint_closed")}
-                                  className={`px-3 py-1 rounded-xl ${isPending(it, "ch_complaint_closed") ? "bg-slate-200 text-slate-400" : "bg-emerald-600 text-white"}`}
+                                  className={`rounded-xl px-3 py-1 ${isPending(it, "ch_complaint_closed") ? "bg-slate-200 text-slate-400" : "bg-emerald-600 text-white"}`}
                                   onClick={() => handleMove(it, "ch_complaint_closed")}
                                   title="Close complaint"
                                 >
@@ -699,14 +708,13 @@ export default function App() {
                               </>
                             )}
 
-                            {/* CH cannot complete referrals here */}
                             {it.status.startsWith("ref_to_") && <span className="text-xs text-slate-400">Waiting on referral team…</span>}
 
                             {it.status === "ch_referral_complete" && it.assignee === currentUser && (
                               <button
                                 type="button"
                                 disabled={isPending(it, "pick_up")}
-                                className={`px-3 py-1 rounded-xl ${isPending(it, "pick_up") ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"}`}
+                                className={`rounded-xl px-3 py-1 ${isPending(it, "pick_up") ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"}`}
                                 onClick={() => handleMove(it, "pick_up")}
                                 title="Re-pick and continue processing"
                               >
@@ -727,14 +735,13 @@ export default function App() {
         {/* ---------- Referral Teams Console ---------- */}
         {tab === "referrals" && (
           <section className="grid gap-4">
-            <div className="bg-white rounded-2xl shadow p-4">
-              <h2 className="text-lg font-medium mb-3">Referral Queue</h2>
+            <div className="rounded-2xl bg-white p-4 shadow">
+              <h2 className="mb-3 text-lg font-medium">Referral Queue</h2>
 
-              {/* Search */}
               <div className="mb-3">
                 <input
                   type="text"
-                  className="border rounded-xl px-3 py-2 w-full md:w-80"
+                  className="w-full rounded-xl border px-3 py-2 md:w-80"
                   placeholder="Search referrals…  Use * as wildcard"
                   value={refQuery}
                   onChange={(e) => setRefQuery(e.target.value)}
@@ -743,8 +750,8 @@ export default function App() {
 
               <div className="overflow-auto">
                 <table className="min-w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-slate-500">
+                  <thead className="bg-slate-50 text-slate-600">
+                    <tr className="text-left">
                       <th className="py-2 pr-4">ID</th>
                       <th className="py-2 pr-4">Title</th>
                       <th className="py-2 pr-4">Complaint Received</th>
@@ -767,41 +774,28 @@ export default function App() {
                       </tr>
                     )}
                     {referralItems.map((it) => (
-                      <tr key={it.id} className="border-t border-slate-100 align-top">
+                      <tr key={it.id} className="align-top border-t border-slate-100">
                         <td className="py-2 pr-4 font-mono">{it.id}</td>
                         <td className="py-2 pr-4">{it.title}</td>
                         <td className="py-2 pr-4">{fmtDate(it.receivedDate)}</td>
                         <td className="py-2 pr-4">{fmtDate(it.loggedDate)}</td>
                         <td className="py-2 pr-4">{it.assignee ?? "—"}</td>
                         <td className="py-2 pr-4">
-                          <span className={`px-2 py-1 rounded-full text-xs ${pill(it.status)}`} title={DESC[it.status]}>
+                          <span className={`rounded-full px-2 py-1 text-xs ${pill(it.status)}`} title={DESC[it.status]}>
                             {LABEL[it.status]}
                           </span>
                         </td>
                         <td className="py-2 pr-4">{fmt(it.startTime)}</td>
                         <td className="py-2 pr-4">{fmt(it.endTime)}</td>
                         <td className="py-2 pr-4">{fmtDuration(currentElapsedMs(it))}</td>
-                        <td className="py-2 pr-4 min-w-[260px]">
-                          {it.comments && it.comments.length > 0 ? (
-                            <div className="text-xs">
-                              <div className="text-slate-500">({it.comments.length}) latest</div>
-                              <div className="text-slate-800">{fmtShort(it.comments[it.comments.length - 1].text, 40)}</div>
-                              <div className="text-slate-500">{new Date(it.comments[it.comments.length - 1].ts).toLocaleString()}</div>
-                            </div>
-                          ) : (
-                            <span className="text-slate-400 text-xs">No comments</span>
-                          )}
-                          <div>
-                            <button type="button" className="mt-1 px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs" onClick={() => handleAddComment(it)}>
-                              Add
-                            </button>
-                          </div>
+                        <td className="py-2 pr-4">
+                          <CommentsCell item={it} onAdd={() => handleAddComment(it)} onViewAll={() => setCommentsItem(it)} />
                         </td>
-                        <td className="py-2 pr-4 min-w-[240px]">
+                        <td className="min-w-[240px] py-2 pr-4">
                           <button
                             type="button"
                             disabled={isPending(it, "ch_referral_complete")}
-                            className={`px-3 py-1 rounded-xl ${isPending(it, "ch_referral_complete") ? "bg-slate-200 text-slate-400" : "bg-indigo-600 text-white"}`}
+                            className={`rounded-xl px-3 py-1 ${isPending(it, "ch_referral_complete") ? "bg-slate-200 text-slate-400" : "bg-indigo-600 text-white"}`}
                             onClick={() => handleMove(it, "ch_referral_complete")}
                             title="Return to CH (Referral Complete)"
                           >
@@ -817,6 +811,50 @@ export default function App() {
           </section>
         )}
       </div>
+
+      {/* Comments History Modal */}
+      <Modal
+        open={Boolean(commentsItem)}
+        onClose={() => setCommentsItem(null)}
+        title={commentsItem ? `Comments — ${commentsItem.id} • ${commentsItem.title}` : "Comments"}
+      >
+        {commentsItem && (commentsItem.comments?.length ?? 0) > 0 ? (
+          <div className="space-y-3">
+            {commentsItem.comments
+              .slice()
+              .sort((a, b) => a.ts - b.ts) // oldest -> newest
+              .map((c, idx) => (
+                <div key={c.ts + "-" + idx} className="rounded-xl border p-3">
+                  <div className="mb-1 text-sm text-slate-500">
+                    <span className="font-medium">{c.author}</span> · {fmtDateTime(c.ts)}
+                  </div>
+                  <div className="text-slate-900">{c.text}</div>
+                </div>
+              ))}
+          </div>
+        ) : (
+          <div className="text-sm text-slate-500">No comments yet.</div>
+        )}
+
+        <div className="mt-4 flex items-center justify-end gap-2 border-t pt-3">
+          <button className="rounded-xl bg-slate-100 px-3 py-1 text-slate-800 hover:bg-slate-200" onClick={() => setCommentsItem(null)}>
+            Close
+          </button>
+          <button
+            className="rounded-xl bg-slate-900 px-3 py-1 text-white"
+            onClick={() => {
+              const txt = window.prompt("Add a comment:");
+              if (!txt || !txt.trim()) return;
+              const note = { ts: Date.now(), author: "mahi", text: txt.trim() };
+              setItems((prev) =>
+                prev.map((it) => (it.id === commentsItem.id ? { ...it, comments: [...(it.comments ?? []), note] } : it))
+              );
+            }}
+          >
+            Add comment
+          </button>
+        </div>
+      </Modal>
 
       <Toasts toasts={toasts} remove={removeToast} />
     </div>
