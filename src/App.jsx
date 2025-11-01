@@ -1,12 +1,4 @@
-import React, { useMemo, useState } from "react";
-
-/**
- * Workflow UI — Step 3 (UI-only) + Enhancements
- * - Comments: full history in a modal ("View all (N)") + add comment
- * - Rollup tiles: modern gradient stat cards
- * - Slightly styled table headers for all consoles
- * - All Step 3 features retained (allocation, refer, close, timing, search)
- */
+import React, { useMemo, useState, useEffect, useRef } from "react";
 
 /* ------------------ Status model ------------------ */
 const STATUSES = [
@@ -197,7 +189,7 @@ async function apiPickUp(item, { currentUser, mahiHaveActive }) {
   }
   const next = "pick_up";
   if (!canTransition(item.status, next)) throw new Error("Invalid transition to Pick up.");
-  return { ...item, assignee: currentUser, status: next, startTime: item.startTime ?? Date.now(), endTime: null };
+  return { ...item, assignee: currentUser, status: next, startTime: item.startTime ?? Date.now(), endTime: null, };
 }
 async function apiMove(item, next) {
   await delay(500 + Math.random() * 400);
@@ -300,14 +292,74 @@ function CommentsCell({ item, onAdd, onViewAll }) {
   );
 }
 
+
+function csvEscape(val) {
+  if (val == null) return "";
+  const s = String(val);
+  return /[,"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function buildManagerCsvRows(items, LABEL, fmtDate, fmt, fmtDuration, totalSpentMs) {
+  const header = [
+    "ID", "Title", "Complaint Received", "Complaint Logged",
+    "Assignee", "Status", "Start", "End", "Total Time Spent (hh:mm:ss)", "Latest Comment"
+  ];
+  const rows = [header];
+
+  for (const it of items) {
+    const latestComment = (it.comments && it.comments.length)
+      ? `${new Date(it.comments[it.comments.length - 1].ts).toLocaleString()} - ${it.comments[it.comments.length - 1].author}: ${it.comments[it.comments.length - 1].text}`
+      : "";
+
+    rows.push([
+      it.id,
+      it.title,
+      fmtDate(it.receivedDate),
+      fmtDate(it.loggedDate),
+      it.assignee ?? "",
+      LABEL[it.status] ?? it.status,
+      fmt(it.startTime),
+      fmt(it.endTime),
+      fmtDuration(totalSpentMs(it)),
+      latestComment
+    ].map(csvEscape));
+  }
+  return rows.map(r => r.join(",")).join("\n");
+}
+
+function triggerDownload(filename, text) {
+  const blob = new Blob([text], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  URL.revokeObjectURL(url);
+  a.remove();
+}
+
 /* ------------------ App ------------------ */
 export default function App() {
   // searches
   const [managerQuery, setManagerQuery] = useState("");
   const [userQuery, setUserQuery] = useState("");
   const [refQuery, setRefQuery] = useState("");
+  const managerSearchRef = useRef(null);
+  const userSearchRef = useRef(null);
+  const refSearchRef = useRef(null);
 
-  const [items, setItems] = useState(initialItems);
+
+  const [items, setItems] = useState(() => {
+    try {
+      const saved = localStorage.getItem("wf_items_v1");
+      return saved ? JSON.parse(saved) : initialItems;
+    } catch {
+      return initialItems;
+    }
+  });
+
   const [tab, setTab] = useState("manager");
   const [allocSelect, setAllocSelect] = useState({});
   const [referSelect, setReferSelect] = useState({});
@@ -345,14 +397,14 @@ React.useEffect(() => {
 
   const managerItems = useMemo(() => items.filter((i) => matchesFilter(i, managerQuery)), [items, managerQuery]);
 
-  const rawmahirItems = useMemo(
+  const rawYourItems = useMemo(
     () => items.filter((i) => i.assignee === currentUser || (i.assignee === null && i.status === "complaint_unallocated")),
     [items]
   );
-  const mahirItems = useMemo(() => rawmahirItems.filter((i) => matchesFilter(i, userQuery)), [rawmahirItems, userQuery]);
+  const yourItems = useMemo(() => rawYourItems.filter(i => matchesFilter(i, userQuery)),[rawYourItems, userQuery]);
 
   const rawRefItems = useMemo(() => items.filter((i) => i.status.startsWith("ref_to_")), [items]);
-  const referralItems = useMemo(() => rawRefItems.filter((i) => matchesFilter(i, refQuery)), [rawRefItems, refQuery]);
+  const referralItems = useMemo(() => rawRefItems.filter(i => matchesFilter(i, refQuery)), [rawRefItems, refQuery]);
 
   const mahiHaveActive = useMemo(
     () => items.some((i) => i.assignee === currentUser && i.status === "pick_up"),
@@ -523,15 +575,38 @@ React.useEffect(() => {
             {/* Grid */}
             <div className="md:col-span-6 mt-2 rounded-2xl bg-white p-4 shadow">
               <h2 className="mb-3 text-lg font-medium">All Work Items</h2>
-              <div className="mb-3">
+              <div className="mb-3 flex flex-wrap gap-2 items-center">
                 <input
+                  ref={managerSearchRef}
                   type="text"
-                  className="w-full rounded-xl border px-3 py-2 md:w-80"
-                  placeholder="Search (id, title, assignee, status, comments)…  Use * as wildcard"
+                  className="border rounded-xl px-3 py-2 w-full md:w-80"
+                  placeholder="Search all…"
                   value={managerQuery}
                   onChange={(e) => setManagerQuery(e.target.value)}
                 />
+                <button
+                  type="button"
+                  className="rounded-xl px-3 py-2 bg-slate-900 text-white hover:opacity-90"
+                  onClick={() => {
+                    const csv = buildManagerCsvRows(managerItems, LABEL, fmtDate, fmt, fmtDuration, totalSpentMs);
+                    triggerDownload(`complaints-manager-${new Date().toISOString().slice(0,10)}.csv`, csv);
+                  }}
+                  title="Export current (filtered) rows to CSV"
+                >
+                  Export CSV
+                </button>
               </div>
+
+              {/* <div className="mb-3">
+                <input
+                  ref={managerSearchRef}
+                  type="text"
+                  className="w-full rounded-xl border px-3 py-2 md:w-80"
+                  placeholder="Search all…"
+                  value={managerQuery}
+                  onChange={(e) => setManagerQuery(e.target.value)}
+                />
+              </div> */}
 
               <div className="overflow-auto rounded-2xl ring-1 ring-slate-100 hover:ring-slate-200 transition">
                 <table className="min-w-full text-sm">
@@ -616,7 +691,7 @@ React.useEffect(() => {
           <section className="grid gap-4">
             <div className="flex items-center justify-between rounded-2xl bg-white p-4 shadow">
               <div>
-                <h2 className="text-lg font-medium">mahir Queue</h2>
+                <h2 className="text-lg font-medium">Mahi's Queue</h2>
                 <p className="text-sm text-slate-500">
                   Signed in as <span className="font-medium">mahi</span>
                 </p>
@@ -631,9 +706,10 @@ React.useEffect(() => {
             <div className="rounded-2xl bg-white p-4 shadow">
               <div className="mb-3">
                 <input
+                  ref={userSearchRef}
                   type="text"
                   className="w-full rounded-xl border px-3 py-2 md:w-80"
-                  placeholder="Search mahir queue…  Use * as wildcard"
+                  placeholder="Search your items…"
                   value={userQuery}
                   onChange={(e) => setUserQuery(e.target.value)}
                 />
@@ -657,7 +733,7 @@ React.useEffect(() => {
                     </tr>
                   </thead>
                   <tbody>
-                    {mahirItems.map((it) => (
+                    {yourItems.map((it) => (
                       <tr key={it.id} className="align-top border-t border-slate-100">
                         <td className="py-2 pr-4 font-mono">{it.id}</td>
                         <td className="py-2 pr-4">{it.title}</td>
@@ -775,9 +851,10 @@ React.useEffect(() => {
 
               <div className="mb-3">
                 <input
+                  ref={refSearchRef}
                   type="text"
                   className="w-full rounded-xl border px-3 py-2 md:w-80"
-                  placeholder="Search referrals…  Use * as wildcard"
+                  placeholder="Search referral items…"
                   value={refQuery}
                   onChange={(e) => setRefQuery(e.target.value)}
                 />
