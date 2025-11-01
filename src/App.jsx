@@ -360,6 +360,12 @@ export default function App() {
     }
   });
 
+  useEffect(() => {
+    try {
+      localStorage.setItem("wf_items_v1", JSON.stringify(items));
+    } catch {}
+  }, [items]);
+
   const [tab, setTab] = useState("manager");
   const [allocSelect, setAllocSelect] = useState({});
   const [referSelect, setReferSelect] = useState({});
@@ -374,11 +380,63 @@ export default function App() {
   const [commentsItem, setCommentsItem] = useState(null);
 
   // Force a re-render once per second so elapsed/spent timers update live
-const [tick, setTick] = useState(0);
-React.useEffect(() => {
-  const id = setInterval(() => setTick(t => t + 1), 1000);
-  return () => clearInterval(id);
-}, []);
+  const [tick, setTick] = useState(0);
+  React.useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    let goMode = false;
+    let goTimer = null;
+
+    function isTypingEl(el) {
+      const tag = el?.tagName?.toLowerCase();
+      return tag === "input" || tag === "textarea" || el?.isContentEditable;
+    }
+
+    function focusSearchForTab() {
+      if (tab === "manager" && managerSearchRef.current) managerSearchRef.current.focus();
+      if (tab === "user" && userSearchRef.current) userSearchRef.current.focus();
+      if (tab === "referrals" && refSearchRef.current) refSearchRef.current.focus();
+    }
+
+    function keyHandler(e) {
+      // Don’t hijack keys when typing in a field
+      if (isTypingEl(document.activeElement)) return;
+
+      // '/' => focus tab search
+      if (e.key === "/") {
+        e.preventDefault();
+        focusSearchForTab();
+        return;
+      }
+
+      // 'g' then 'm/u/r'
+      if (e.key.toLowerCase() === "g") {
+        goMode = true;
+        clearTimeout(goTimer);
+        goTimer = setTimeout(() => (goMode = false), 1000);
+        return;
+      }
+
+      if (goMode) {
+        const k = e.key.toLowerCase();
+        if (k === "m") setTab("manager");
+        if (k === "u") setTab("user");
+        if (k === "r") setTab("referrals");
+        goMode = false;
+        clearTimeout(goTimer);
+      }
+    }
+
+    window.addEventListener("keydown", keyHandler);
+    return () => {
+      window.removeEventListener("keydown", keyHandler);
+      clearTimeout(goTimer);
+    };
+  }, [tab]);
+
 
 
   /* ---- Derived ---- */
