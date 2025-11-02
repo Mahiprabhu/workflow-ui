@@ -149,6 +149,57 @@ function matchesFilter(it, q) {
   return haystack.includes(needle);
 }
 
+/* ------------------ Sorting / Column Filters helpers ------------------ */
+function getFieldForSort(item, key) {
+  switch (key) {
+    case "id": return item.id;
+    case "title": return item.title;
+    case "receivedDate": return item.receivedDate || 0;
+    case "loggedDate": return item.loggedDate || 0;
+    case "assignee": return item.assignee || "";
+    case "status": return LABEL[item.status] || item.status;
+    case "start": return item.startTime || 0;
+    case "end": return item.endTime || 0;
+    case "comments": {
+      const latest = item.comments?.[item.comments.length - 1];
+      return latest ? latest.text : "";
+    }
+    case "spent": return totalSpentMs(item) || 0;
+    default: return "";
+  }
+}
+function sortRows(rows, sort) {
+  if (!sort?.key || !sort?.dir) return rows;
+  const dir = sort.dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const va = getFieldForSort(a, sort.key);
+    const vb = getFieldForSort(b, sort.key);
+    if (va < vb) return -1 * dir;
+    if (va > vb) return  1 * dir;
+    return 0;
+  });
+}
+function applyColumnFilters(rows, filters) {
+  const fh = (v) => (v ?? "").toString().toLowerCase();
+  const inc = (val, q) => fh(val).includes(fh(q));
+  return rows.filter((it) => {
+    const latestComment = it.comments?.[it.comments.length - 1]?.text ?? "";
+    const checks = [
+      inc(it.id, filters.id),
+      inc(it.title, filters.title),
+      inc(fmtDate(it.receivedDate), filters.receivedDate),
+      inc(fmtDate(it.loggedDate), filters.loggedDate),
+      inc(it.assignee ?? "", filters.assignee),
+      inc(LABEL[it.status] ?? it.status, filters.status),
+      inc(it.startTime ? new Date(it.startTime).toLocaleString() : "", filters.start),
+      inc(it.endTime ? new Date(it.endTime).toLocaleString() : "", filters.end),
+      inc(fmtDuration(totalSpentMs(it)), filters.spent),
+      inc(latestComment, filters.comments),
+    ];
+    return checks.every(Boolean);
+  });
+}
+
 /* ------------------ Sample data ------------------ */
 const seedItems = [
   { id: "W-201", title: "Address change complaint", assignee: null,  status: "complaint_unallocated", startTime: null, endTime: null, spentMs: 0, comments: [] },
@@ -189,7 +240,7 @@ async function apiPickUp(item, { currentUser, mahiHaveActive }) {
   }
   const next = "pick_up";
   if (!canTransition(item.status, next)) throw new Error("Invalid transition to Pick up.");
-  return { ...item, assignee: currentUser, status: next, startTime: item.startTime ?? Date.now(), endTime: null, };
+  return { ...item, assignee: currentUser, status: next, startTime: item.startTime ?? Date.now(), endTime: null };
 }
 async function apiMove(item, next) {
   await delay(500 + Math.random() * 400);
@@ -212,7 +263,7 @@ async function apiMove(item, next) {
 /* ------------------ UI atoms ------------------ */
 function Toasts({ toasts, remove }) {
   return (
-    <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-50">
+    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
       {toasts.map((t) => (
         <div key={t.id} className={`px-3 py-2 rounded-xl shadow text-sm ${t.type === "error" ? "bg-red-100 text-red-900" : "bg-emerald-100 text-emerald-900"}`}>
           <div className="flex items-start gap-2">
@@ -226,23 +277,31 @@ function Toasts({ toasts, remove }) {
   );
 }
 
-// Nice colorful stat card
-function StatCard({ title, value, gradient }) {
+// Nice colorful stat card (clickable + active ring)
+function StatCard({ title, value, gradient, onClick, active = false }) {
   const g = {
     blue: "from-sky-500 to-blue-600 ring-sky-700/30",
     amber: "from-amber-500 to-orange-600 ring-amber-700/30",
     green: "from-emerald-500 to-green-600 ring-emerald-700/30",
   }[gradient];
+
   return (
-    <div className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${g} text-white shadow-lg ring-1`}>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group relative w-full overflow-hidden rounded-2xl bg-gradient-to-br ${g} text-left text-white shadow-lg ring-1 transition
+        ${onClick ? "cursor-pointer hover:translate-y-[-1px] hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-white/60" : ""}
+        ${active ? "ring-2 ring-white/70" : ""}
+      `}
+      title={title}
+    >
       <div className="p-5">
         <div className="text-xs uppercase tracking-wider/loose opacity-90">{title}</div>
         <div className="mt-1 text-4xl font-bold drop-shadow-sm">{value}</div>
       </div>
-      {/* soft glow */}
       <div className="pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full bg-white/10 blur-2xl" />
-      <div className="pointer-events-none absolute right-6 top-6 h-6 w-6 rounded-full bg-white/20" />
-    </div>
+      <div className="pointer-events-none absolute right-6 top-6 h-6 w-6 rounded-full bg-white/25 group-hover:bg-white/35 transition" />
+    </button>
   );
 }
 
@@ -270,21 +329,18 @@ function CommentsCell({ item, onAdd, onViewAll }) {
     <div className="min-w-[260px]">
       {c.length > 0 ? (
         <div className="text-xs">
-          <div className="text-slate-500 mb-0.5">
-            {/* show (N) and indicate it's showing the latest preview */}
-            ({c.length}) latest
-          </div>
+          <div className="mb-0.5 text-slate-500">({c.length}) latest</div>
           <div className="text-slate-800">{latest ? (latest.text.length > 40 ? latest.text.slice(0, 40) + "…" : latest.text) : ""}</div>
           <div className="text-slate-500">{latest ? fmtDateTime(latest.ts) : ""}</div>
         </div>
       ) : (
-        <span className="text-slate-400 text-xs">No comments</span>
+        <span className="text-xs text-slate-400">No comments</span>
       )}
       <div className="mt-1 flex gap-2">
-        <button type="button" className="px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs" onClick={onAdd}>
+        <button type="button" className="rounded-lg bg-slate-900 px-2 py-0.5 text-xs text-white" onClick={onAdd}>
           Add
         </button>
-        <button type="button" className="px-2 py-0.5 rounded-lg bg-slate-100 text-slate-800 text-xs hover:bg-slate-200" onClick={onViewAll} disabled={c.length === 0}>
+        <button type="button" className="rounded-lg bg-slate-100 px-2 py-0.5 text-xs text-slate-800 hover:bg-slate-200" onClick={onViewAll} disabled={c.length === 0}>
           View all
         </button>
       </div>
@@ -292,25 +348,21 @@ function CommentsCell({ item, onAdd, onViewAll }) {
   );
 }
 
-
 function csvEscape(val) {
   if (val == null) return "";
   const s = String(val);
   return /[,"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
-
 function buildManagerCsvRows(items, LABEL, fmtDate, fmt, fmtDuration, totalSpentMs) {
   const header = [
     "ID", "Title", "Complaint Received", "Complaint Logged",
     "Assignee", "Status", "Start", "End", "Total Time Spent (hh:mm:ss)", "Latest Comment"
   ];
   const rows = [header];
-
   for (const it of items) {
     const latestComment = (it.comments && it.comments.length)
       ? `${new Date(it.comments[it.comments.length - 1].ts).toLocaleString()} - ${it.comments[it.comments.length - 1].author}: ${it.comments[it.comments.length - 1].text}`
       : "";
-
     rows.push([
       it.id,
       it.title,
@@ -326,7 +378,6 @@ function buildManagerCsvRows(items, LABEL, fmtDate, fmt, fmtDuration, totalSpent
   }
   return rows.map(r => r.join(",")).join("\n");
 }
-
 function triggerDownload(filename, text) {
   const blob = new Blob([text], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
@@ -350,6 +401,34 @@ export default function App() {
   const userSearchRef = useRef(null);
   const refSearchRef = useRef(null);
 
+  // quick tile filter: 'all' | 'pipeline' | 'completed'
+  const [managerQuick, setManagerQuick] = useState("all");
+
+  // column filters + sorting for manager grid
+  const [managerFilters, setManagerFilters] = useState({
+    id: "",
+    title: "",
+    receivedDate: "",
+    loggedDate: "",
+    assignee: "",
+    status: "",
+    start: "",
+    end: "",
+    spent: "",
+    comments: "",
+  });
+  const [managerSort, setManagerSort] = useState({ key: null, dir: null }); // dir: 'asc' | 'desc' | null
+  const setSortKey = (key) => {
+    setManagerSort((cur) => {
+      if (cur.key !== key) return { key, dir: "asc" };
+      if (cur.dir === "asc") return { key, dir: "desc" };
+      return { key: null, dir: null };
+    });
+  };
+  const caret = (key) => {
+    if (managerSort.key !== key) return null;
+    return managerSort.dir === "asc" ? "▲" : "▼";
+    };
 
   const [items, setItems] = useState(() => {
     try {
@@ -359,7 +438,6 @@ export default function App() {
       return initialItems;
     }
   });
-
   useEffect(() => {
     try {
       localStorage.setItem("wf_items_v1", JSON.stringify(items));
@@ -381,45 +459,37 @@ export default function App() {
 
   // Force a re-render once per second so elapsed/spent timers update live
   const [tick, setTick] = useState(0);
-  React.useEffect(() => {
+  useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
 
+  // Keyboard shortcuts: / focus search, g+m/u/r
   useEffect(() => {
     let goMode = false;
     let goTimer = null;
-
     function isTypingEl(el) {
       const tag = el?.tagName?.toLowerCase();
       return tag === "input" || tag === "textarea" || el?.isContentEditable;
     }
-
     function focusSearchForTab() {
       if (tab === "manager" && managerSearchRef.current) managerSearchRef.current.focus();
       if (tab === "user" && userSearchRef.current) userSearchRef.current.focus();
       if (tab === "referrals" && refSearchRef.current) refSearchRef.current.focus();
     }
-
     function keyHandler(e) {
-      // Don’t hijack keys when typing in a field
       if (isTypingEl(document.activeElement)) return;
-
-      // '/' => focus tab search
       if (e.key === "/") {
         e.preventDefault();
         focusSearchForTab();
         return;
       }
-
-      // 'g' then 'm/u/r'
       if (e.key.toLowerCase() === "g") {
         goMode = true;
         clearTimeout(goTimer);
         goTimer = setTimeout(() => (goMode = false), 1000);
         return;
       }
-
       if (goMode) {
         const k = e.key.toLowerCase();
         if (k === "m") setTab("manager");
@@ -429,15 +499,12 @@ export default function App() {
         clearTimeout(goTimer);
       }
     }
-
     window.addEventListener("keydown", keyHandler);
     return () => {
       window.removeEventListener("keydown", keyHandler);
       clearTimeout(goTimer);
     };
   }, [tab]);
-
-
 
   /* ---- Derived ---- */
   const summary = useMemo(() => {
@@ -453,7 +520,19 @@ export default function App() {
     return { total, pipeline, completed };
   }, [items]);
 
-  const managerItems = useMemo(() => items.filter((i) => matchesFilter(i, managerQuery)), [items, managerQuery]);
+  // MANAGER items pipeline: quick tile filter -> column filters -> free-text -> sorting
+  const managerItems = useMemo(() => {
+    let rows = items;
+    if (managerQuick === "pipeline") {
+      rows = rows.filter((i) => i.status !== "ch_complaint_closed");
+    } else if (managerQuick === "completed") {
+      rows = rows.filter((i) => i.status === "ch_complaint_closed");
+    }
+    rows = applyColumnFilters(rows, managerFilters);
+    rows = rows.filter((i) => matchesFilter(i, managerQuery));
+    rows = sortRows(rows, managerSort);
+    return rows;
+  }, [items, managerQuick, managerFilters, managerQuery, managerSort]);
 
   const rawYourItems = useMemo(
     () => items.filter((i) => i.assignee === currentUser || (i.assignee === null && i.status === "complaint_unallocated")),
@@ -494,7 +573,6 @@ export default function App() {
       setPending((p) => ({ ...p, [item.id]: null }));
     }
   }
-
   async function handlePickUp(item) {
     setPending((p) => ({ ...p, [item.id]: "pickup" }));
     try {
@@ -507,7 +585,6 @@ export default function App() {
       setPending((p) => ({ ...p, [item.id]: null }));
     }
   }
-
   async function handleMove(item, next) {
     setPending((p) => ({ ...p, [item.id]: next }));
     try {
@@ -520,7 +597,6 @@ export default function App() {
       setPending((p) => ({ ...p, [item.id]: null }));
     }
   }
-
   function handleAddComment(item) {
     const text = window.prompt(`Add comment for ${item.id}:`);
     if (!text || !text.trim()) return;
@@ -531,8 +607,7 @@ export default function App() {
 
   /* ---- UI helpers ---- */
   const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : "—");
-  const TABLE_HEAD_GRADIENT =
-  "bg-gradient-to-r from-indigo-50 via-sky-50 to-cyan-50 text-slate-700";
+  const TABLE_HEAD_GRADIENT = "bg-gradient-to-r from-indigo-50 via-sky-50 to-cyan-50 text-slate-700";
 
   const pill = (status) =>
     ({
@@ -609,42 +684,75 @@ export default function App() {
           >
             Referral Teams
           </button>
-
         </div>
 
         {/* ---------- Manager Console ---------- */}
         {tab === "manager" && (
           <section className="grid gap-4 md:grid-cols-4 lg:grid-cols-6">
-            {/* Rollups: colorful stat cards */}
+            {/* Rollups: colorful stat cards (CLICKABLE) */}
             <div className="md:col-span-4 lg:col-span-6 grid gap-4 sm:grid-cols-3">
-              <StatCard title="Total complaints received" value={totals.total} gradient="blue" />
-              <StatCard title="Total complaints in pipeline" value={totals.pipeline} gradient="amber" />
-              <StatCard title="Total complaints completed" value={totals.completed} gradient="green" />
+              <StatCard
+                title="Total complaints received"
+                value={totals.total}
+                gradient="blue"
+                onClick={() => setManagerQuick("all")}
+                active={managerQuick === "all"}
+              />
+              <StatCard
+                title="Total complaints in pipeline"
+                value={totals.pipeline}
+                gradient="amber"
+                onClick={() => setManagerQuick("pipeline")}
+                active={managerQuick === "pipeline"}
+              />
+              <StatCard
+                title="Total complaints completed"
+                value={totals.completed}
+                gradient="green"
+                onClick={() => setManagerQuick("completed")}
+                active={managerQuick === "completed"}
+              />
             </div>
 
             {/* Status tiles */}
             {STATUSES.map((s) => (
-              <div key={s} className="bg-white rounded-2xl shadow p-4 ring-1 ring-slate-100 hover:shadow-md transition" title={DESC[s]}>
+              <div key={s} className="rounded-2xl bg-white p-4 shadow ring-1 ring-slate-100 transition hover:shadow-md" title={DESC[s]}>
                 <div className="text-[11px] uppercase tracking-wide text-slate-500">{LABEL[s]}</div>
                 <div className="mt-1 text-3xl font-bold">{summary[s]}</div>
               </div>
             ))}
 
             {/* Grid */}
-            <div className="md:col-span-6 mt-2 rounded-2xl bg-white p-4 shadow">
+            <div className="mt-2 rounded-2xl bg-white p-4 shadow md:col-span-6">
               <h2 className="mb-3 text-lg font-medium">All Work Items</h2>
-              <div className="mb-3 flex flex-wrap gap-2 items-center">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
                 <input
                   ref={managerSearchRef}
                   type="text"
-                  className="border rounded-xl px-3 py-2 w-full md:w-80"
+                  className="w-full rounded-xl border px-3 py-2 md:w-80"
                   placeholder="Search all…"
                   value={managerQuery}
                   onChange={(e) => setManagerQuery(e.target.value)}
                 />
                 <button
                   type="button"
-                  className="rounded-xl px-3 py-2 bg-slate-900 text-white hover:opacity-90"
+                  className="rounded-xl bg-slate-100 px-3 py-2 text-slate-800 hover:bg-slate-200"
+                  onClick={() => {
+                    setManagerFilters({
+                      id: "", title: "", receivedDate: "", loggedDate: "",
+                      assignee: "", status: "", start: "", end: "", spent: "", comments: "",
+                    });
+                    setManagerSort({ key: null, dir: null });
+                    setManagerQuery("");
+                    setManagerQuick("all");
+                  }}
+                  title="Clear all filters and sorting"
+                >
+                  Clear filters
+                </button>
+                <button
+                  type="button"
+                  className="rounded-xl bg-slate-900 px-3 py-2 text-white hover:opacity-90"
                   onClick={() => {
                     const csv = buildManagerCsvRows(managerItems, LABEL, fmtDate, fmt, fmtDuration, totalSpentMs);
                     triggerDownload(`complaints-manager-${new Date().toISOString().slice(0,10)}.csv`, csv);
@@ -655,34 +763,149 @@ export default function App() {
                 </button>
               </div>
 
-              {/* <div className="mb-3">
-                <input
-                  ref={managerSearchRef}
-                  type="text"
-                  className="w-full rounded-xl border px-3 py-2 md:w-80"
-                  placeholder="Search all…"
-                  value={managerQuery}
-                  onChange={(e) => setManagerQuery(e.target.value)}
-                />
-              </div> */}
-
-              <div className="overflow-auto rounded-2xl ring-1 ring-slate-100 hover:ring-slate-200 transition">
+              <div className="overflow-auto rounded-2xl ring-1 ring-slate-100 transition hover:ring-slate-200">
                 <table className="min-w-full text-sm">
                   <thead className={TABLE_HEAD_GRADIENT + " border-b border-slate-200"}>
+                    {/* Labels row with sorting */}
                     <tr className="text-left">
-                      <th className="py-2 pr-4">ID</th>
-                      <th className="py-2 pr-4">Title</th>
-                      <th className="py-2 pr-4">Complaint Received</th>
-                      <th className="py-2 pr-4">Complaint Logged</th>
-                      <th className="py-2 pr-4">Assignee</th>
-                      <th className="py-2 pr-4">Status</th>
-                      <th className="py-2 pr-4">Start</th>
-                      <th className="py-2 pr-4">End</th>
-                      <th className="py-2 pr-4">Total Time Spent</th>
-                      <th className="py-2 pr-4">Comments</th>
+                      <th className="py-2 pr-4">
+                        <button className="flex items-center gap-1 font-medium" onClick={() => setSortKey("id")}>
+                          ID <span className="text-xs">{caret("id")}</span>
+                        </button>
+                      </th>
+                      <th className="py-2 pr-4">
+                        <button className="flex items-center gap-1 font-medium" onClick={() => setSortKey("title")}>
+                          Title <span className="text-xs">{caret("title")}</span>
+                        </button>
+                      </th>
+                      <th className="py-2 pr-4">
+                        <button className="flex items-center gap-1 font-medium" onClick={() => setSortKey("receivedDate")}>
+                          Complaint Received <span className="text-xs">{caret("receivedDate")}</span>
+                        </button>
+                      </th>
+                      <th className="py-2 pr-4">
+                        <button className="flex items-center gap-1 font-medium" onClick={() => setSortKey("loggedDate")}>
+                          Complaint Logged <span className="text-xs">{caret("loggedDate")}</span>
+                        </button>
+                      </th>
+                      <th className="py-2 pr-4">
+                        <button className="flex items-center gap-1 font-medium" onClick={() => setSortKey("assignee")}>
+                          Assignee <span className="text-xs">{caret("assignee")}</span>
+                        </button>
+                      </th>
+                      <th className="py-2 pr-4">
+                        <button className="flex items-center gap-1 font-medium" onClick={() => setSortKey("status")}>
+                          Status <span className="text-xs">{caret("status")}</span>
+                        </button>
+                      </th>
+                      <th className="py-2 pr-4">
+                        <button className="flex items-center gap-1 font-medium" onClick={() => setSortKey("start")}>
+                          Start <span className="text-xs">{caret("start")}</span>
+                        </button>
+                      </th>
+                      <th className="py-2 pr-4">
+                        <button className="flex items-center gap-1 font-medium" onClick={() => setSortKey("end")}>
+                          End <span className="text-xs">{caret("end")}</span>
+                        </button>
+                      </th>
+                      <th className="py-2 pr-4">
+                        <button className="flex items-center gap-1 font-medium" onClick={() => setSortKey("spent")}>
+                          Total Time Spent <span className="text-xs">{caret("spent")}</span>
+                        </button>
+                      </th>
+                      <th className="py-2 pr-4">
+                        <button className="flex items-center gap-1 font-medium" onClick={() => setSortKey("comments")}>
+                          Comments <span className="text-xs">{caret("comments")}</span>
+                        </button>
+                      </th>
                       <th className="py-2 pr-4">Actions</th>
                     </tr>
+                    {/* Inline filter inputs row */}
+                    <tr className="border-t border-slate-200/70 text-left">
+                      <th className="py-1 pr-4">
+                        <input
+                          className="w-full rounded-lg border px-2 py-1 text-xs"
+                          placeholder="filter…"
+                          value={managerFilters.id}
+                          onChange={(e) => setManagerFilters(f => ({ ...f, id: e.target.value }))}
+                        />
+                      </th>
+                      <th className="py-1 pr-4">
+                        <input
+                          className="w-full rounded-lg border px-2 py-1 text-xs"
+                          placeholder="filter…"
+                          value={managerFilters.title}
+                          onChange={(e) => setManagerFilters(f => ({ ...f, title: e.target.value }))}
+                        />
+                      </th>
+                      <th className="py-1 pr-4">
+                        <input
+                          className="w-full rounded-lg border px-2 py-1 text-xs"
+                          placeholder="DD-MMM-YYYY"
+                          value={managerFilters.receivedDate}
+                          onChange={(e) => setManagerFilters(f => ({ ...f, receivedDate: e.target.value }))}
+                        />
+                      </th>
+                      <th className="py-1 pr-4">
+                        <input
+                          className="w-full rounded-lg border px-2 py-1 text-xs"
+                          placeholder="DD-MMM-YYYY"
+                          value={managerFilters.loggedDate}
+                          onChange={(e) => setManagerFilters(f => ({ ...f, loggedDate: e.target.value }))}
+                        />
+                      </th>
+                      <th className="py-1 pr-4">
+                        <input
+                          className="w-full rounded-lg border px-2 py-1 text-xs"
+                          placeholder="filter…"
+                          value={managerFilters.assignee}
+                          onChange={(e) => setManagerFilters(f => ({ ...f, assignee: e.target.value }))}
+                        />
+                      </th>
+                      <th className="py-1 pr-4">
+                        <input
+                          className="w-full rounded-lg border px-2 py-1 text-xs"
+                          placeholder="filter…"
+                          value={managerFilters.status}
+                          onChange={(e) => setManagerFilters(f => ({ ...f, status: e.target.value }))}
+                        />
+                      </th>
+                      <th className="py-1 pr-4">
+                        <input
+                          className="w-full rounded-lg border px-2 py-1 text-xs"
+                          placeholder="mm/dd hh:mm…"
+                          value={managerFilters.start}
+                          onChange={(e) => setManagerFilters(f => ({ ...f, start: e.target.value }))}
+                        />
+                      </th>
+                      <th className="py-1 pr-4">
+                        <input
+                          className="w-full rounded-lg border px-2 py-1 text-xs"
+                          placeholder="mm/dd hh:mm…"
+                          value={managerFilters.end}
+                          onChange={(e) => setManagerFilters(f => ({ ...f, end: e.target.value }))}
+                        />
+                      </th>
+                      <th className="py-1 pr-4">
+                        <input
+                          className="w-full rounded-lg border px-2 py-1 text-xs"
+                          placeholder="hh:mm:ss"
+                          value={managerFilters.spent}
+                          onChange={(e) => setManagerFilters(f => ({ ...f, spent: e.target.value }))}
+                        />
+                      </th>
+                      <th className="py-1 pr-4">
+                        <input
+                          className="w-full rounded-lg border px-2 py-1 text-xs"
+                          placeholder="latest comment…"
+                          value={managerFilters.comments}
+                          onChange={(e) => setManagerFilters(f => ({ ...f, comments: e.target.value }))}
+                        />
+                      </th>
+                      <th className="py-1 pr-4"><span className="text-xs text-slate-400">—</span></th>
+                    </tr>
                   </thead>
+
                   <tbody>
                     {managerItems.map((it) => (
                       <tr key={it.id} className="align-top border-t border-slate-100">
@@ -773,7 +996,7 @@ export default function App() {
                 />
               </div>
 
-              <div className="overflow-auto rounded-2xl ring-1 ring-slate-100 hover:ring-slate-200 transition">
+              <div className="overflow-auto rounded-2xl ring-1 ring-slate-100 transition hover:ring-slate-200">
                 <table className="min-w-full text-sm">
                   <thead className={TABLE_HEAD_GRADIENT + " border-b border-slate-200"}>
                     <tr className="text-left">
@@ -918,7 +1141,7 @@ export default function App() {
                 />
               </div>
 
-              <div className="overflow-auto rounded-2xl ring-1 ring-slate-100 hover:ring-slate-200 transition">
+              <div className="overflow-auto rounded-2xl ring-1 ring-slate-100 transition hover:ring-slate-200">
                 <table className="min-w-full text-sm">
                   <thead className={TABLE_HEAD_GRADIENT + " border-b border-slate-200"}>
                     <tr className="text-left">
