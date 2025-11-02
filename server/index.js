@@ -1,82 +1,110 @@
+// server/index.js
 import express from "express";
-import fs from "fs";
+import cors from "cors";
+import morgan from "morgan";
+import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DATA_FILE = path.join(__dirname, "items.json");
 
 const app = express();
+const PORT = process.env.PORT || 5174;
+
+// middleware
+app.use(
+  cors({
+    origin: ["http://localhost:5173"], // Vite dev
+    credentials: false,
+  })
+);
 app.use(express.json());
+app.use(morgan("dev"));
 
-// tiny helper to read/write JSON file
-function readItems() {
-  return JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
+// data file
+const DATA_FILE = path.join(__dirname, "items.json");
+
+async function readItems() {
+  try {
+    const txt = await fs.readFile(DATA_FILE, "utf8");
+    return JSON.parse(txt);
+  } catch (e) {
+    if (e.code === "ENOENT") return [];
+    throw e;
+  }
 }
-function writeItems(items) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(items, null, 2));
+async function writeItems(items) {
+  await fs.writeFile(DATA_FILE, JSON.stringify(items, null, 2), "utf8");
 }
 
-// GET all items
-app.get("/api/items", (req, res) => {
-  const items = readItems();
-  res.json(items);
+// health
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, service: "workflow-api" });
 });
 
-// PATCH item by id (partial update)
-app.patch("/api/items/:id", (req, res) => {
-  const id = req.params.id;
-  const patch = req.body; // {assignee?, status?, startTime?, endTime?, spentMs? ...}
-  const items = readItems();
-  const idx = items.findIndex(i => i.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Not found" });
-
-  const updated = { ...items[idx], ...patch };
-  items[idx] = updated;
-  writeItems(items);
-  res.json(updated);
+// list
+app.get("/api/items", async (_req, res, next) => {
+  try {
+    res.json(await readItems());
+  } catch (e) {
+    next(e);
+  }
 });
 
-// POST a comment
-app.post("/api/items/:id/comments", (req, res) => {
-  const id = req.params.id;
-  const { ts, author, text } = req.body || {};
-  if (!text) return res.status(400).json({ error: "Comment text required" });
-  const items = readItems();
-  const idx = items.findIndex(i => i.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Not found" });
-  const it = items[idx];
-  const comments = it.comments || [];
-  comments.push({ ts: ts ?? Date.now(), author: author ?? "unknown", text: text.trim() });
-  items[idx] = { ...it, comments };
-  writeItems(items);
-  res.json(items[idx]);
+// create
+app.post("/api/items", async (req, res, next) => {
+  try {
+    const payload = req.body || {};
+    const id =
+      payload.id ||
+      `W-${Math.floor(Math.random() * 9000 + 1000).toString()}`;
+    const items = await readItems();
+    const newItem = { ...payload, id };
+    items.push(newItem);
+    await writeItems(items);
+    res.status(201).json(newItem);
+  } catch (e) {
+    next(e);
+  }
 });
 
-// Transition helper (optional): validate a -> b on the server later.
-// For now we just accept a requested status and timing fields.
-app.post("/api/items/:id/transition", (req, res) => {
-  const id = req.params.id;
-  const { status, startTime, endTime, spentMs } = req.body || {};
-  if (!status) return res.status(400).json({ error: "status required" });
-  const items = readItems();
-  const idx = items.findIndex(i => i.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Not found" });
-
-  const updated = {
-    ...items[idx],
-    status,
-    ...(startTime !== undefined ? { startTime } : {}),
-    ...(endTime !== undefined ? { endTime } : {}),
-    ...(spentMs !== undefined ? { spentMs } : {})
-  };
-  items[idx] = updated;
-  writeItems(items);
-  res.json(updated);
+// update
+app.put("/api/items/:id", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const patch = req.body || {};
+    const items = await readItems();
+    const idx = items.findIndex((i) => String(i.id) === String(id));
+    if (idx === -1) return res.status(404).json({ error: "Not found" });
+    const updated = { ...items[idx], ...patch };
+    items[idx] = updated;
+    await writeItems(items);
+    res.json(updated);
+  } catch (e) {
+    next(e);
+  }
 });
 
-const PORT = process.env.PORT || 5174; // dev API on 5174
+// delete
+app.delete("/api/items/:id", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const items = await readItems();
+    const nextItems = items.filter((i) => String(i.id) !== String(id));
+    await writeItems(nextItems);
+    res.status(204).end();
+  } catch (e) {
+    next(e);
+  }
+});
+
+// basic error handler
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(500).json({ error: err.message || "Server error" });
+});
+
 app.listen(PORT, () => {
   console.log(`API listening on http://localhost:${PORT}`);
 });

@@ -1,7 +1,40 @@
-import React, { useMemo, useState, useEffect, useRef } from "react";
-import { fetchItems, patchItem, addComment, transitionItem } from "./api";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/* ------------------ Status model ------------------ */
+/* ================== Config ================== */
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5174/api";
+
+/* Centralized fetch helper with JSON + errors */
+async function http(url, opts = {}) {
+  const res = await fetch(url, {
+    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+    ...opts,
+  });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!res.ok) {
+    const msg = data?.error || data?.message || res.statusText;
+    throw new Error(msg);
+  }
+  return data;
+}
+
+/* API wrapper */
+const api = {
+  listItems: () => http(`${API_BASE}/items`),
+  createItem: (payload) =>
+    http(`${API_BASE}/items`, { method: "POST", body: JSON.stringify(payload) }),
+  updateItem: (id, patch) =>
+    http(`${API_BASE}/items/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
+  deleteItem: (id) =>
+    http(`${API_BASE}/items/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+};
+
+/* ================== Domain model ================== */
 const STATUSES = [
   "complaint_unallocated",
   "ch_review",
@@ -59,7 +92,6 @@ const DESC = {
   ref_to_timeline_update: "Referred to India team for Timeline updation",
 };
 
-/* ------------------ Transition rules ------------------ */
 const ALLOWED_NEXT = {
   complaint_unallocated: ["ch_review"],
   ch_review: ["pick_up"],
@@ -96,7 +128,7 @@ function canTransition(from, to) {
   return ALLOWED_NEXT[from]?.includes(to);
 }
 
-/* ------------------ Helpers ------------------ */
+/* ================== Small utils ================== */
 function fmtDate(ts) {
   if (!ts) return "—";
   const d = new Date(ts);
@@ -105,10 +137,9 @@ function fmtDate(ts) {
   const yr = d.getFullYear();
   return `${day}-${mon}-${yr}`;
 }
-function fmtDateTime(ts) {
-  if (!ts) return "—";
-  return new Date(ts).toLocaleString();
-}
+const fmtDateTime = (ts) => (ts ? new Date(ts).toLocaleString() : "—");
+const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : "—");
+
 function fmtDuration(ms) {
   if (!ms || ms < 1000) return "0s";
   const s = Math.floor(ms / 1000);
@@ -130,23 +161,8 @@ function totalSpentMs(it) {
   const active = it.status === "pick_up" && it.startTime && !it.endTime ? Date.now() - it.startTime : 0;
   return (it.spentMs || 0) + active;
 }
-function matchesFilter(it, q) {
-  if (!q) return true;
-  const needle = q.trim().toLowerCase().replace(/\*/g, "");
-  if (!needle) return true;
-  const haystack = [
-    it.id,
-    it.title,
-    it.assignee || "",
-    LABEL[it.status],
-    ...(it.comments || []).map((c) => c.text),
-  ]
-    .join(" | ")
-    .toLowerCase();
-  return haystack.includes(needle);
-}
 
-/* ------------------ UI atoms ------------------ */
+/* ================== UI atoms ================== */
 function Toasts({ toasts, remove }) {
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
@@ -176,19 +192,17 @@ function StatCard({ title, value, gradient, onClick, active = false }) {
     amber: "from-amber-500 to-orange-600 ring-amber-700/30",
     green: "from-emerald-500 to-green-600 ring-emerald-700/30",
   }[gradient];
-
   return (
     <button
       type="button"
       onClick={onClick}
       className={`group relative w-full overflow-hidden rounded-2xl bg-gradient-to-br ${g} text-left text-white shadow-lg ring-1 transition
-        hover:translate-y-[-1px] hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-white/60
-        ${active ? "ring-2 ring-white/70" : ""}
-      `}
+        ${onClick ? "cursor-pointer hover:translate-y-[-1px] hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-white/60" : ""}
+        ${active ? "ring-2 ring-white/70" : ""}`}
       title={title}
     >
       <div className="p-5">
-        <div className="text-xs uppercase tracking-wider/loose opacity-90">{title}</div>
+        <div className="text-xs uppercase opacity-90 tracking-wider">{title}</div>
         <div className="mt-1 text-4xl font-bold drop-shadow-sm">{value}</div>
       </div>
       <div className="pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full bg-white/10 blur-2xl" />
@@ -222,11 +236,13 @@ function CommentsCell({ item, onAdd, onViewAll }) {
       {c.length > 0 ? (
         <div className="text-xs">
           <div className="mb-0.5 text-slate-500">({c.length}) latest</div>
-          <div className="text-slate-800">{latest ? (latest.text.length > 40 ? latest.text.slice(0, 40) + "…" : latest.text) : ""}</div>
+          <div className="text-slate-800">
+            {latest ? (latest.text.length > 40 ? latest.text.slice(0, 40) + "…" : latest.text) : ""}
+          </div>
           <div className="text-slate-500">{latest ? fmtDateTime(latest.ts) : ""}</div>
         </div>
       ) : (
-        <span className="text-slate-400 text-xs">No comments</span>
+        <span className="text-xs text-slate-400">No comments</span>
       )}
       <div className="mt-1 flex gap-2">
         <button type="button" className="px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs" onClick={onAdd}>
@@ -245,287 +261,165 @@ function CommentsCell({ item, onAdd, onViewAll }) {
   );
 }
 
-/* ------------------ CSV helpers (unchanged) ------------------ */
-function csvEscape(val) {
-  if (val == null) return "";
-  const s = String(val);
-  return /[,"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-function buildManagerCsvRows(items) {
-  const header = [
-    "ID",
-    "Title",
-    "Complaint Received",
-    "Complaint Logged",
-    "Assignee",
-    "Status",
-    "Start",
-    "End",
-    "Total Time Spent (hh:mm:ss)",
-    "Latest Comment",
-  ];
-  const rows = [header];
-
-  for (const it of items) {
-    const latestComment =
-      it.comments && it.comments.length
-        ? `${new Date(it.comments[it.comments.length - 1].ts).toLocaleString()} - ${
-            it.comments[it.comments.length - 1].author
-          }: ${it.comments[it.comments.length - 1].text}`
-        : "";
-
-    rows.push(
-      [
-        it.id,
-        it.title,
-        fmtDate(it.receivedDate),
-        fmtDate(it.loggedDate),
-        it.assignee ?? "",
-        LABEL[it.status] ?? it.status,
-        it.startTime ? new Date(it.startTime).toLocaleString() : "",
-        it.endTime ? new Date(it.endTime).toLocaleString() : "",
-        fmtDuration(totalSpentMs(it)),
-        latestComment,
-      ].map(csvEscape)
-    );
-  }
-  return rows.map((r) => r.join(",")).join("\n");
-}
-function triggerDownload(filename, text) {
-  const blob = new Blob([text], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.style.display = "none";
-  document.body.appendChild(a);
-  a.click();
-  URL.revokeObjectURL(url);
-  a.remove();
-}
-
-/* ------------------ App ------------------ */
+/* ================== App ================== */
 export default function App() {
-  // searches
+  const [tab, setTab] = useState("manager");
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // search + quick filters
   const [managerQuery, setManagerQuery] = useState("");
-  const [userQuery, setUserQuery] = useState("");
-  const [refQuery, setRefQuery] = useState("");
+  const [managerQuick, setManagerQuick] = useState("all"); // all | pipeline | completed
   const managerSearchRef = useRef(null);
+
+  const [userQuery, setUserQuery] = useState("");
   const userSearchRef = useRef(null);
+
+  const [refQuery, setRefQuery] = useState("");
   const refSearchRef = useRef(null);
 
-  // rollup quick filter
-  const [managerQuick, setManagerQuick] = useState("all"); // all|pipeline|completed
-
-  // column filters (Manager grid)
-  const [col, setCol] = useState({
-    id: "",
-    title: "",
-    received: "",
-    logged: "",
-    assignee: "",
-    status: "",
-  });
-
-  // sorting (Manager grid)
-  const [sortBy, setSortBy] = useState(null); // 'id' | 'title' | 'received' | ...
-  const [sortDir, setSortDir] = useState("asc"); // 'asc' | 'desc'
-
-  // items from API
-  const [items, setItems] = useState(null); // null while loading
-  const [tab, setTab] = useState("manager");
+  // UI state
   const [allocSelect, setAllocSelect] = useState({});
   const [referSelect, setReferSelect] = useState({});
-  const currentUser = "mahi";
-
   const [pending, setPending] = useState({});
   const [toasts, setToasts] = useState([]);
-  const pushToast = (msg, type = "success") => setToasts((ts) => [...ts, { id: Math.random().toString(36).slice(2), msg, type }]);
-  const removeToast = (id) => setToasts((ts) => ts.filter((t) => t.id !== id));
-
   const [commentsItem, setCommentsItem] = useState(null);
+  const [activeStat, setActiveStat] = useState(null); // rollup click
 
-  // live timers
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(id);
-  }, []);
+  const currentUser = "mahi";
+  const CH_NAMES = ["Alice", "Bob", "Charlie", "Deepa", "Ehsan", "mahi"];
+  const referralTargets = [
+    "ref_to_bo_uk",
+    "ref_to_bo_ind",
+    "ref_to_finance",
+    "ref_to_aps",
+    "ref_to_cuw",
+    "ref_to_fct",
+    "ref_to_client",
+    "ref_to_rs",
+    "ref_to_ph",
+    "ref_to_timeline_update",
+  ];
 
-  // load from API once
-  useEffect(() => {
-    let mounted = true;
-    fetchItems()
-      .then((data) => {
-        if (mounted) setItems(data);
-      })
-      .catch((e) => {
-        if (mounted) setItems([]);
-        pushToast("Failed to load from API. Showing empty list.", "error");
-      });
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  // keyboard shortcuts
-  useEffect(() => {
-    let goMode = false;
-    let goTimer = null;
-
-    function isTypingEl(el) {
-      const tag = el?.tagName?.toLowerCase();
-      return tag === "input" || tag === "textarea" || el?.isContentEditable;
-    }
-    function focusSearchForTab() {
-      if (tab === "manager" && managerSearchRef.current) managerSearchRef.current.focus();
-      if (tab === "user" && userSearchRef.current) userSearchRef.current.focus();
-      if (tab === "referrals" && refSearchRef.current) refSearchRef.current.focus();
-    }
-    function keyHandler(e) {
-      if (isTypingEl(document.activeElement)) return;
-      if (e.key === "/") {
-        e.preventDefault();
-        focusSearchForTab();
-        return;
-      }
-      if (e.key.toLowerCase() === "g") {
-        goMode = true;
-        clearTimeout(goTimer);
-        goTimer = setTimeout(() => (goMode = false), 1000);
-        return;
-      }
-      if (goMode) {
-        const k = e.key.toLowerCase();
-        if (k === "m") setTab("manager");
-        if (k === "u") setTab("user");
-        if (k === "r") setTab("referrals");
-        goMode = false;
-        clearTimeout(goTimer);
-      }
-    }
-    window.addEventListener("keydown", keyHandler);
-    return () => {
-      window.removeEventListener("keydown", keyHandler);
-      clearTimeout(goTimer);
-    };
-  }, [tab]);
-
-  /* ---- Derived ---- */
-  const summary = useMemo(() => {
-    const counts = Object.fromEntries(STATUSES.map((s) => [s, 0]));
-    for (const it of items || []) counts[it.status] = (counts[it.status] || 0) + 1;
-    return counts;
-  }, [items]);
-
-  const totals = useMemo(() => {
-    const total = (items || []).length;
-    const completed = (items || []).filter((i) => i.status === "ch_complaint_closed").length;
-    const pipeline = total - completed;
-    return { total, pipeline, completed };
-  }, [items]);
-
-  // grid filtering helpers
-  const passRollupQuick = (it) => {
-    if (managerQuick === "all") return true;
-    if (managerQuick === "pipeline") return it.status !== "ch_complaint_closed";
-    if (managerQuick === "completed") return it.status === "ch_complaint_closed";
-    return true;
-  };
-  const passColFilters = (it) => {
-    // simple substring filters; dates use DD-MMM-YYYY string matching
-    const idOk = !col.id || it.id.toLowerCase().includes(col.id.toLowerCase());
-    const titleOk = !col.title || it.title.toLowerCase().includes(col.title.toLowerCase());
-    const assigneeOk = !col.assignee || (it.assignee || "").toLowerCase().includes(col.assignee.toLowerCase());
-    const statusOk = !col.status || LABEL[it.status].toLowerCase().includes(col.status.toLowerCase());
-    const receivedOk = !col.received || fmtDate(it.receivedDate).toLowerCase().includes(col.received.toLowerCase());
-    const loggedOk = !col.logged || fmtDate(it.loggedDate).toLowerCase().includes(col.logged.toLowerCase());
-    return idOk && titleOk && assigneeOk && statusOk && receivedOk && loggedOk;
-  };
-
-  const managerItemsBase = useMemo(() => {
-    const base = (items || []).filter((i) => matchesFilter(i, managerQuery)).filter(passRollupQuick).filter(passColFilters);
-    return base;
-  }, [items, managerQuery, managerQuick, col]);
-
-  // sorting
-  const managerItems = useMemo(() => {
-    if (!sortBy) return managerItemsBase;
-    const arr = [...managerItemsBase];
-    const getVal = (it) => {
-      switch (sortBy) {
-        case "id":
-          return it.id;
-        case "title":
-          return it.title;
-        case "assignee":
-          return it.assignee || "";
-        case "status":
-          return LABEL[it.status] || it.status;
-        case "received":
-          return it.receivedDate || 0;
-        case "logged":
-          return it.loggedDate || 0;
-        case "start":
-          return it.startTime || 0;
-        case "end":
-          return it.endTime || 0;
-        case "spent":
-          return totalSpentMs(it);
-        default:
-          return "";
-      }
-    };
-    arr.sort((a, b) => {
-      const av = getVal(a);
-      const bv = getVal(b);
-      if (av < bv) return sortDir === "asc" ? -1 : 1;
-      if (av > bv) return sortDir === "asc" ? 1 : -1;
-      return 0;
-    });
-    return arr;
-  }, [managerItemsBase, sortBy, sortDir]);
-
-  const rawYourItems = useMemo(
-    () => (items || []).filter((i) => i.assignee === currentUser || (i.assignee === null && i.status === "complaint_unallocated")),
-    [items]
-  );
-  const yourItems = useMemo(() => rawYourItems.filter((i) => matchesFilter(i, userQuery)), [rawYourItems, userQuery]);
-
-  const rawRefItems = useMemo(() => (items || []).filter((i) => i.status.startsWith("ref_to_")), [items]);
-  const referralItems = useMemo(() => rawRefItems.filter((i) => matchesFilter(i, refQuery)), [rawRefItems, refQuery]);
-
-  const mahiHaveActive = useMemo(
-    () => (items || []).some((i) => i.assignee === currentUser && i.status === "pick_up"),
-    [items]
-  );
-
+  const pushToast = (msg, type = "success") =>
+    setToasts((ts) => [...ts, { id: Math.random().toString(36).slice(2), msg, type }]);
+  const removeToast = (id) => setToasts((ts) => ts.filter((t) => t.id !== id));
   const isPending = (item, action = null) => {
     const val = pending[item.id];
     if (action == null) return Boolean(val);
     return val === action;
   };
 
+  // live tick for durations
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // load from backend
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await api.listItems();
+        setItems(data);
+      } catch (e) {
+        pushToast(`Failed to load items: ${e.message}`, "error");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  // derived
+  const summary = useMemo(() => {
+    const counts = Object.fromEntries(STATUSES.map((s) => [s, 0]));
+    for (const it of items) counts[it.status] = (counts[it.status] || 0) + 1;
+    return counts;
+  }, [items, tick]);
+
+  const totals = useMemo(() => {
+    const total = items.length;
+    const completed = items.filter((i) => i.status === "ch_complaint_closed").length;
+    const pipeline = total - completed;
+    return { total, pipeline, completed };
+  }, [items]);
+
+  const mahiHaveActive = useMemo(
+    () => items.some((i) => i.assignee === currentUser && i.status === "pick_up"),
+    [items]
+  );
+
+  // filtering helpers
+  function matchesFilter(it, q) {
+    if (!q) return true;
+    const needle = q.trim().toLowerCase().replace(/\*/g, "");
+    if (!needle) return true;
+    const haystack = [
+      it.id,
+      it.title,
+      it.assignee || "",
+      LABEL[it.status],
+      ...(it.comments || []).map((c) => c.text),
+    ]
+      .join(" | ")
+      .toLowerCase();
+    return haystack.includes(needle);
+  }
+
+  // quick filters from rollups
+  function applyRollupFilter(kind) {
+    setActiveStat(kind);
+    setManagerQuick(kind);
+    if (tab !== "manager") setTab("manager");
+  }
+
+  const pipelineFilter = (it) => it.status !== "ch_complaint_closed";
+  const completedFilter = (it) => it.status === "ch_complaint_closed";
+
+  const managerBaseRows = useMemo(() => {
+    let rows = items.slice();
+    if (managerQuick === "pipeline") rows = rows.filter(pipelineFilter);
+    if (managerQuick === "completed") rows = rows.filter(completedFilter);
+    return rows;
+  }, [items, managerQuick]);
+
+  const managerItems = useMemo(
+    () => managerBaseRows.filter((i) => matchesFilter(i, managerQuery)),
+    [managerBaseRows, managerQuery]
+  );
+
+  const yourItems = useMemo(
+    () =>
+      items
+        .filter((i) => i.assignee === currentUser || (i.assignee == null && i.status === "complaint_unallocated"))
+        .filter((i) => matchesFilter(i, userQuery)),
+    [items, userQuery]
+  );
+
+  const referralItems = useMemo(
+    () => items.filter((i) => i.status.startsWith("ref_to_")).filter((i) => matchesFilter(i, refQuery)),
+    [items, refQuery]
+  );
+
   const canActOn = (it) => {
     if (it.assignee === currentUser && it.status === "pick_up") return true;
     return !mahiHaveActive;
   };
 
-  /* ---- Actions (optimistic + API) ---- */
+  /* ============== Actions (persisted) ============== */
   async function handleAllocate(item) {
-    const handler = allocSelect[item.id] || "mahi";
+    const assignee = allocSelect[item.id] || CH_NAMES[0];
+    if (!canTransition(item.status, "ch_review")) return pushToast("Cannot allocate from current status", "error");
+
     setPending((p) => ({ ...p, [item.id]: "allocate" }));
-
-    const prev = item;
-    const optimistic = { ...item, assignee: handler, status: "ch_review" };
-    setItems((prevList) => prevList.map((it) => (it.id === item.id ? optimistic : it)));
-
     try {
-      await patchItem(item.id, { assignee: handler, status: "ch_review" });
-      pushToast(`Allocated ${item.id} to ${handler}`);
+      const patch = { assignee, status: "ch_review" };
+      const updated = await api.updateItem(item.id, patch);
+      setItems((prev) => prev.map((it) => (it.id === item.id ? updated : it)));
+      pushToast(`Allocated ${item.id} to ${assignee}`);
     } catch (e) {
-      setItems((prevList) => prevList.map((it) => (it.id === item.id ? prev : it)));
-      pushToast(e.message || "Failed to allocate", "error");
+      pushToast(e.message, "error");
     } finally {
       setPending((p) => ({ ...p, [item.id]: null }));
     }
@@ -533,50 +427,50 @@ export default function App() {
 
   async function handlePickUp(item) {
     setPending((p) => ({ ...p, [item.id]: "pickup" }));
-    const now = Date.now();
-
-    const prev = item;
-    const optimistic = { ...item, assignee: currentUser, status: "pick_up", startTime: item.startTime ?? now, endTime: null };
-    setItems((prevList) => prevList.map((it) => (it.id === item.id ? optimistic : it)));
-
     try {
-      await patchItem(item.id, { assignee: currentUser, status: "pick_up", startTime: item.startTime ?? now, endTime: null });
+      if (mahiHaveActive && !(item.assignee === currentUser && item.status === "pick_up")) {
+        throw new Error("You already have an active item. Complete or refer it before picking another.");
+      }
+      if (!canTransition(item.status, "pick_up")) throw new Error("Invalid transition to Pick up.");
+      const patch = {
+        assignee: currentUser,
+        status: "pick_up",
+        startTime: item.startTime ?? Date.now(),
+        endTime: null,
+      };
+      const updated = await api.updateItem(item.id, patch);
+      setItems((prev) => prev.map((it) => (it.id === item.id ? updated : it)));
       pushToast(`Picked up ${item.id}`);
     } catch (e) {
-      setItems((prevList) => prevList.map((it) => (it.id === item.id ? prev : it)));
-      pushToast(e.message || "Failed to pick up", "error");
+      pushToast(e.message, "error");
     } finally {
       setPending((p) => ({ ...p, [item.id]: null }));
     }
   }
 
   async function handleMove(item, next) {
+    if (!canTransition(item.status, next)) {
+      return pushToast(`Invalid transition from ${LABEL[item.status]} to ${LABEL[next]}.`, "error");
+    }
     setPending((p) => ({ ...p, [item.id]: next }));
-    const leavingPick = item.status === "pick_up" && next !== "pick_up";
-    const now = Date.now();
-    const session = leavingPick && item.startTime ? now - item.startTime : 0;
-
-    const prev = item;
-    const optimistic = {
-      ...item,
-      status: next,
-      startTime: leavingPick ? null : item.startTime,
-      endTime: leavingPick ? now : item.endTime,
-      spentMs: leavingPick ? (item.spentMs || 0) + Math.max(0, session) : item.spentMs,
-    };
-    setItems((prevList) => prevList.map((it) => (it.id === item.id ? optimistic : it)));
-
     try {
-      await transitionItem(item.id, {
-        status: next,
-        startTime: optimistic.startTime ?? null,
-        endTime: optimistic.endTime ?? null,
-        spentMs: optimistic.spentMs,
-      });
+      const leavingPick = item.status === "pick_up" && next !== "pick_up";
+      let patch = { status: next };
+      if (leavingPick && item.startTime) {
+        const now = Date.now();
+        const session = now - item.startTime;
+        patch = {
+          ...patch,
+          endTime: now,
+          startTime: null,
+          spentMs: (item.spentMs || 0) + Math.max(0, session),
+        };
+      }
+      const updated = await api.updateItem(item.id, patch);
+      setItems((prev) => prev.map((it) => (it.id === item.id ? updated : it)));
       pushToast(`${item.id} → ${LABEL[next]}`);
     } catch (e) {
-      setItems((prevList) => prevList.map((it) => (it.id === item.id ? prev : it)));
-      pushToast(e.message || "Failed to move status", "error");
+      pushToast(e.message, "error");
     } finally {
       setPending((p) => ({ ...p, [item.id]: null }));
     }
@@ -587,20 +481,22 @@ export default function App() {
     if (!text || !text.trim()) return;
     const note = { ts: Date.now(), author: currentUser, text: text.trim() };
 
-    const prev = item;
-    const optimistic = { ...item, comments: [...(item.comments ?? []), note] };
-    setItems((prevList) => prevList.map((it) => (it.id === item.id ? optimistic : it)));
-
-    addComment(item.id, note)
-      .then(() => pushToast(`Added comment on ${item.id}`))
-      .catch((e) => {
-        setItems((prevList) => prevList.map((it) => (it.id === item.id ? prev : it)));
-        pushToast(e.message || "Failed to add comment", "error");
-      });
+    (async () => {
+      setPending((p) => ({ ...p, [item.id]: "comment" }));
+      try {
+        const nextComments = [...(item.comments || []), note];
+        const updated = await api.updateItem(item.id, { comments: nextComments });
+        setItems((prev) => prev.map((it) => (it.id === item.id ? updated : it)));
+        pushToast(`Added comment on ${item.id}`);
+      } catch (e) {
+        pushToast(e.message, "error");
+      } finally {
+        setPending((p) => ({ ...p, [item.id]: null }));
+      }
+    })();
   }
 
-  /* ---- UI helpers ---- */
-  const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : "—");
+  /* ============== UI bits ============== */
   const TABLE_HEAD_GRADIENT = "bg-gradient-to-r from-indigo-50 via-sky-50 to-cyan-50 text-slate-700";
   const pill = (status) =>
     ({
@@ -622,50 +518,20 @@ export default function App() {
       ref_to_timeline_update: "bg-purple-100 text-purple-800",
     }[status]);
 
-  const referralTargets = [
-    "ref_to_bo_uk",
-    "ref_to_bo_ind",
-    "ref_to_finance",
-    "ref_to_aps",
-    "ref_to_cuw",
-    "ref_to_fct",
-    "ref_to_client",
-    "ref_to_rs",
-    "ref_to_ph",
-    "ref_to_timeline_update",
-  ];
-
-  const SortHeader = ({ name, label, sortKey }) => {
-    const active = sortBy === sortKey;
+  if (loading) {
     return (
-      <button
-        className={`flex items-center gap-1 py-2 pr-4 font-medium ${active ? "text-slate-900" : "text-slate-700"}`}
-        onClick={() => {
-          if (sortBy !== sortKey) {
-            setSortBy(sortKey);
-            setSortDir("asc");
-          } else {
-            setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-          }
-        }}
-        title={`Sort by ${label}`}
-      >
-        <span>{label}</span>
-        <span className="text-xs">{active ? (sortDir === "asc" ? "▲" : "▼") : "↕"}</span>
-      </button>
+      <div className="min-h-screen grid place-items-center">
+        <div className="text-slate-600">Loading…</div>
+      </div>
     );
-  };
-
-  if (items === null) {
-    return <div className="p-6 text-slate-600">Loading…</div>;
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6 text-slate-900">
+    <div className="min-h-screen bg-slate-50 text-slate-900 p-6">
       <div className="mx-auto max-w-7xl">
         <header className="mb-6">
           <h1 className="text-2xl font-semibold">Complaints Workflow Tracker</h1>
-          <p className="text-sm text-slate-600">Simplified Workflow Engine</p>
+          <p className="text-sm text-slate-600">Simplified Workflow Engine • API: {API_BASE}</p>
         </header>
 
         {/* Tabs */}
@@ -705,41 +571,45 @@ export default function App() {
         {/* ---------- Manager Console ---------- */}
         {tab === "manager" && (
           <section className="grid gap-4 md:grid-cols-4 lg:grid-cols-6">
-            {/* Rollups with click-to-filter */}
-            <div className="grid gap-4 md:col-span-4 lg:col-span-6 sm:grid-cols-3">
+            {/* Rollups */}
+            <div className="md:col-span-4 lg:col-span-6 grid gap-4 sm:grid-cols-3">
               <StatCard
                 title="Total complaints received"
                 value={totals.total}
                 gradient="blue"
-                active={managerQuick === "all"}
-                onClick={() => setManagerQuick("all")}
+                onClick={() => applyRollupFilter("all")}
+                active={activeStat === "all"}
               />
               <StatCard
                 title="Total complaints in pipeline"
                 value={totals.pipeline}
                 gradient="amber"
-                active={managerQuick === "pipeline"}
-                onClick={() => setManagerQuick("pipeline")}
+                onClick={() => applyRollupFilter("pipeline")}
+                active={activeStat === "pipeline"}
               />
               <StatCard
                 title="Total complaints completed"
                 value={totals.completed}
                 gradient="green"
-                active={managerQuick === "completed"}
-                onClick={() => setManagerQuick("completed")}
+                onClick={() => applyRollupFilter("completed")}
+                active={activeStat === "completed"}
               />
             </div>
 
             {/* Status tiles */}
             {STATUSES.map((s) => (
-              <div key={s} className="rounded-2xl bg-white p-4 shadow ring-1 ring-slate-100 transition hover:shadow-md" title={DESC[s]}>
+              <div
+                key={s}
+                className="bg-white rounded-2xl shadow p-4 ring-1 ring-slate-100 hover:shadow-md transition"
+                title={DESC[s]}
+              >
                 <div className="text-[11px] uppercase tracking-wide text-slate-500">{LABEL[s]}</div>
-                <div className="mt-1 text-3xl font-bold">{summary[s] || 0}</div>
+                <div className="mt-1 text-3xl font-bold">{summary[s]}</div>
               </div>
             ))}
 
             {/* Grid */}
-            <div className="mt-2 rounded-2xl bg-white p-4 shadow md:col-span-6">
+            <div className="md:col-span-6 mt-2 rounded-2xl bg-white p-4 shadow">
               <h2 className="mb-3 text-lg font-medium">All Work Items</h2>
 
               <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -751,98 +621,23 @@ export default function App() {
                   value={managerQuery}
                   onChange={(e) => setManagerQuery(e.target.value)}
                 />
-                <button
-                  type="button"
-                  className="rounded-xl bg-slate-900 px-3 py-2 text-white hover:opacity-90"
-                  onClick={() => {
-                    const csv = buildManagerCsvRows(managerItems);
-                    triggerDownload(`complaints-manager-${new Date().toISOString().slice(0, 10)}.csv`, csv);
-                  }}
-                  title="Export current (filtered) rows to CSV"
-                >
-                  Export CSV
-                </button>
               </div>
 
               <div className="overflow-auto rounded-2xl ring-1 ring-slate-100 transition hover:ring-slate-200">
                 <table className="min-w-full text-sm">
-                  <thead className={TABLE_HEAD_GRADIENT + " border-b border-slate-200"}>
+                  <thead className={"border-b border-slate-200 " + TABLE_HEAD_GRADIENT}>
                     <tr className="text-left">
-                      <th><SortHeader label="ID" sortKey="id" /></th>
-                      <th><SortHeader label="Title" sortKey="title" /></th>
-                      <th><SortHeader label="Complaint Received" sortKey="received" /></th>
-                      <th><SortHeader label="Complaint Logged" sortKey="logged" /></th>
-                      <th><SortHeader label="Assignee" sortKey="assignee" /></th>
-                      <th><SortHeader label="Status" sortKey="status" /></th>
-                      <th><SortHeader label="Start" sortKey="start" /></th>
-                      <th><SortHeader label="End" sortKey="end" /></th>
-                      <th><SortHeader label="Total Time Spent" sortKey="spent" /></th>
+                      <th className="py-2 pr-4">ID</th>
+                      <th className="py-2 pr-4">Title</th>
+                      <th className="py-2 pr-4">Complaint Received</th>
+                      <th className="py-2 pr-4">Complaint Logged</th>
+                      <th className="py-2 pr-4">Assignee</th>
+                      <th className="py-2 pr-4">Status</th>
+                      <th className="py-2 pr-4">Start</th>
+                      <th className="py-2 pr-4">End</th>
+                      <th className="py-2 pr-4">Total Time Spent</th>
                       <th className="py-2 pr-4">Comments</th>
                       <th className="py-2 pr-4">Actions</th>
-                    </tr>
-                    {/* inline filter row */}
-                    <tr className="text-left bg-white/60">
-                      <th className="py-2 pr-4">
-                        <input
-                          className="w-[8ch] rounded-md border px-2 py-1"
-                          placeholder="ID"
-                          value={col.id}
-                          onChange={(e) => setCol((c) => ({ ...c, id: e.target.value }))}
-                        />
-                      </th>
-                      <th className="py-2 pr-4">
-                        <input
-                          className="w-48 rounded-md border px-2 py-1"
-                          placeholder="Title"
-                          value={col.title}
-                          onChange={(e) => setCol((c) => ({ ...c, title: e.target.value }))}
-                        />
-                      </th>
-                      <th className="py-2 pr-4">
-                        <input
-                          className="w-36 rounded-md border px-2 py-1"
-                          placeholder="e.g. 05-Oct-2025"
-                          value={col.received}
-                          onChange={(e) => setCol((c) => ({ ...c, received: e.target.value }))}
-                        />
-                      </th>
-                      <th className="py-2 pr-4">
-                        <input
-                          className="w-36 rounded-md border px-2 py-1"
-                          placeholder="e.g. 08-Oct-2025"
-                          value={col.logged}
-                          onChange={(e) => setCol((c) => ({ ...c, logged: e.target.value }))}
-                        />
-                      </th>
-                      <th className="py-2 pr-4">
-                        <input
-                          className="w-32 rounded-md border px-2 py-1"
-                          placeholder="Assignee"
-                          value={col.assignee}
-                          onChange={(e) => setCol((c) => ({ ...c, assignee: e.target.value }))}
-                        />
-                      </th>
-                      <th className="py-2 pr-4">
-                        <input
-                          className="w-40 rounded-md border px-2 py-1"
-                          placeholder="Status"
-                          value={col.status}
-                          onChange={(e) => setCol((c) => ({ ...c, status: e.target.value }))}
-                        />
-                      </th>
-                      <th className="py-2 pr-4" />
-                      <th className="py-2 pr-4" />
-                      <th className="py-2 pr-4" />
-                      <th className="py-2 pr-4" />
-                      <th className="py-2 pr-4">
-                        <button
-                          className="rounded-md border px-2 py-1 text-xs"
-                          onClick={() => setCol({ id: "", title: "", received: "", logged: "", assignee: "", status: "" })}
-                          title="Clear column filters"
-                        >
-                          Clear filters
-                        </button>
-                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -862,18 +657,22 @@ export default function App() {
                         <td className="py-2 pr-4">{fmt(it.endTime)}</td>
                         <td className="py-2 pr-4">{fmtDuration(totalSpentMs(it))}</td>
                         <td className="py-2 pr-4">
-                          <CommentsCell item={it} onAdd={() => handleAddComment(it)} onViewAll={() => setCommentsItem(it)} />
+                          <CommentsCell
+                            item={it}
+                            onAdd={() => handleAddComment(it)}
+                            onViewAll={() => setCommentsItem(it)}
+                          />
                         </td>
                         <td className="min-w-[320px] py-2 pr-4">
                           {it.status === "complaint_unallocated" ? (
                             <div className="flex items-center gap-2">
                               <select
                                 className="rounded-xl border px-2 py-1"
-                                value={allocSelect[it.id] ?? "mahi"}
+                                value={allocSelect[it.id] ?? CH_NAMES[0]}
                                 onChange={(e) => setAllocSelect((s) => ({ ...s, [it.id]: e.target.value }))}
                                 title="Choose Complaint Handler"
                               >
-                                {["Alice", "Bob", "Charlie", "Deepa", "Ehsan", "mahi"].map((name) => (
+                                {CH_NAMES.map((name) => (
                                   <option key={name} value={name}>
                                     {name}
                                   </option>
@@ -886,7 +685,7 @@ export default function App() {
                                 }`}
                                 onClick={() => handleAllocate(it)}
                                 disabled={isPending(it, "allocate")}
-                                title="Allocate to selected CH (moves to CH Review)"
+                                title="Allocate to selected CH"
                               >
                                 {isPending(it, "allocate") ? "Allocating…" : "Allocate"}
                               </button>
@@ -935,7 +734,7 @@ export default function App() {
 
               <div className="overflow-auto rounded-2xl ring-1 ring-slate-100 transition hover:ring-slate-200">
                 <table className="min-w-full text-sm">
-                  <thead className={TABLE_HEAD_GRADIENT + " border-b border-slate-200"}>
+                  <thead className={"border-b border-slate-200 " + TABLE_HEAD_GRADIENT}>
                     <tr className="text-left">
                       <th className="py-2 pr-4">ID</th>
                       <th className="py-2 pr-4">Title</th>
@@ -976,7 +775,9 @@ export default function App() {
                                 type="button"
                                 disabled={!canActOn(it) || isPending(it, "pickup")}
                                 className={`rounded-xl px-3 py-1 ${
-                                  !canActOn(it) || isPending(it, "pickup") ? "bg-slate-200 text-slate-400" : "bg-blue-600 text-white"
+                                  !canActOn(it) || isPending(it, "pickup")
+                                    ? "bg-slate-200 text-slate-400"
+                                    : "bg-blue-600 text-white"
                                 }`}
                                 onClick={() => handlePickUp(it)}
                                 title="Pick up and start processing"
@@ -990,22 +791,11 @@ export default function App() {
                                 <div className="flex items-center gap-2">
                                   <select
                                     className="rounded-xl border px-2 py-1"
-                                    value={referSelect[it.id] ?? "ref_to_bo_uk"}
+                                    value={referSelect[it.id] ?? referralTargets[0]}
                                     onChange={(e) => setReferSelect((s) => ({ ...s, [it.id]: e.target.value }))}
                                     title="Choose referral destination"
                                   >
-                                    {[
-                                      "ref_to_bo_uk",
-                                      "ref_to_bo_ind",
-                                      "ref_to_finance",
-                                      "ref_to_aps",
-                                      "ref_to_cuw",
-                                      "ref_to_fct",
-                                      "ref_to_client",
-                                      "ref_to_rs",
-                                      "ref_to_ph",
-                                      "ref_to_timeline_update",
-                                    ].map((next) => (
+                                    {referralTargets.map((next) => (
                                       <option key={next} value={next}>
                                         {LABEL[next]}
                                       </option>
@@ -1018,17 +808,16 @@ export default function App() {
                                       isPending(it, "referring") ? "bg-slate-200 text-slate-400" : "bg-purple-600 text-white"
                                     }`}
                                     onClick={() => {
-                                      const next = referSelect[it.id] ?? "ref_to_bo_uk";
+                                      const next = referSelect[it.id] ?? referralTargets[0];
                                       setPending((p) => ({ ...p, [it.id]: "referring" }));
                                       handleMove(it, next).finally(() => setPending((p) => ({ ...p, [it.id]: null })));
                                     }}
-                                    title={DESC[referSelect[it.id] ?? "ref_to_bo_uk"]}
+                                    title={DESC[referSelect[it.id] ?? referralTargets[0]]}
                                   >
                                     Refer
                                   </button>
                                 </div>
 
-                                {/* Close */}
                                 <button
                                   type="button"
                                   disabled={isPending(it, "ch_complaint_closed")}
@@ -1043,7 +832,9 @@ export default function App() {
                               </>
                             )}
 
-                            {it.status.startsWith("ref_to_") && <span className="text-xs text-slate-400">Waiting on referral team…</span>}
+                            {it.status.startsWith("ref_to_") && (
+                              <span className="text-xs text-slate-400">Waiting on referral team…</span>
+                            )}
 
                             {it.status === "ch_referral_complete" && it.assignee === currentUser && (
                               <button
@@ -1088,7 +879,7 @@ export default function App() {
 
               <div className="overflow-auto rounded-2xl ring-1 ring-slate-100 transition hover:ring-slate-200">
                 <table className="min-w-full text-sm">
-                  <thead className={TABLE_HEAD_GRADIENT + " border-b border-slate-200"}>
+                  <thead className={"border-b border-slate-200 " + TABLE_HEAD_GRADIENT}>
                     <tr className="text-left">
                       <th className="py-2 pr-4">ID</th>
                       <th className="py-2 pr-4">Title</th>
@@ -1156,7 +947,9 @@ export default function App() {
       <Modal
         open={Boolean(commentsItem)}
         onClose={() => setCommentsItem(null)}
-        title={commentsItem ? `Comments — ${commentsItem.id} • ${commentsItem.title}` : "Comments"}
+        title={
+          commentsItem ? `Comments — ${commentsItem.id} • ${commentsItem.title}` : "Comments"
+        }
       >
         {commentsItem && (commentsItem.comments?.length ?? 0) > 0 ? (
           <div className="space-y-3">
@@ -1177,7 +970,10 @@ export default function App() {
         )}
 
         <div className="mt-4 flex items-center justify-end gap-2 border-t pt-3">
-          <button className="rounded-xl bg-slate-100 px-3 py-1 text-slate-800 hover:bg-slate-200" onClick={() => setCommentsItem(null)}>
+          <button
+            className="rounded-xl bg-slate-100 px-3 py-1 text-slate-800 hover:bg-slate-200"
+            onClick={() => setCommentsItem(null)}
+          >
             Close
           </button>
           <button
@@ -1186,9 +982,17 @@ export default function App() {
               const txt = window.prompt("Add a comment:");
               if (!txt || !txt.trim()) return;
               const note = { ts: Date.now(), author: "mahi", text: txt.trim() };
-              setItems((prev) => prev.map((it) => (it.id === commentsItem.id ? { ...it, comments: [...(it.comments ?? []), note] } : it)));
+              setItems((prev) =>
+                prev.map((it) =>
+                  it.id === commentsItem.id
+                    ? { ...it, comments: [...(it.comments ?? []), note] }
+                    : it
+                )
+              );
               // persist
-              addComment(commentsItem.id, note).catch(() => pushToast("Failed to persist comment", "error"));
+              api.updateItem(commentsItem.id, {
+                comments: [...(commentsItem.comments ?? []), note],
+              });
             }}
           >
             Add comment
