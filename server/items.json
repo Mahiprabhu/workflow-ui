@@ -1,0 +1,85 @@
+[
+  {
+    "id": "W-201",
+    "title": "Address change complaint",
+    "assignee": "mahi",
+    "status": "ch_review",
+    "startTime": null,
+    "endTime": null,
+    "spentMs": 0,
+    "comments": [],
+    "receivedDate": 1698192000000,
+    "loggedDate": 1698364800000
+  },
+  {
+    "id": "W-202",
+    "title": "Chargeback follow-up",
+    "assignee": "mahi",
+    "status": "ch_review",
+    "startTime": null,
+    "endTime": null,
+    "spentMs": 0,
+    "comments": [],
+    "receivedDate": 1698710400000,
+    "loggedDate": 1698796800000
+  },
+  {
+    "id": "W-203",
+    "title": "Refund case - #7781",
+    "assignee": "mahi",
+    "status": "ch_referral_complete",
+    "startTime": null,
+    "endTime": 1762108089523,
+    "spentMs": 31574289523,
+    "comments": [
+      {
+        "ts": 1730530200000,
+        "author": "mahi",
+        "text": "Initial review started."
+      },
+      {
+        "ts": 1762108118963,
+        "author": "mahi",
+        "text": "completed the review"
+      }
+    ],
+    "receivedDate": 1699142400000,
+    "loggedDate": 1699315200000
+  },
+  {
+    "id": "W-204",
+    "title": "Vendor onboarding",
+    "assignee": "bob",
+    "status": "ref_to_finance",
+    "startTime": 1730529600000,
+    "endTime": null,
+    "spentMs": 0,
+    "comments": [],
+    "receivedDate": 1699660800000,
+    "loggedDate": 1699747200000
+  },
+  {
+    "id": "W-205",
+    "title": "Policy docs missing",
+    "assignee": "alice",
+    "status": "ch_review",
+    "startTime": null,
+    "endTime": null,
+    "spentMs": 0,
+    "comments": [],
+    "receivedDate": 1699920000000,
+    "loggedDate": 1700092800000
+  },
+  {
+    "id": "W-206",
+    "title": "Payment missing",
+    "assignee": "james",
+    "status": "ch_review",
+    "startTime": null,
+    "endTime": null,
+    "spentMs": 0,
+    "comments": [],
+    "receivedDate": 1699920000000,
+    "loggedDate": 1700092800000
+  }
+]
